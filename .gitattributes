@@ -1,0 +1,12 @@
+# Normalisation automatique des fins de ligne (LF/CRLF) pour tous les fichiers texte
+* text=auto
+
+# Fichiers considérés explicitement comme du texte
+*.py text
+*.txt text
+
+# Fichiers binaires : on interdit formellement à Git de modifier leurs fins de ligne
+*.db binary
+*.sqlite3 binary
+*.png binary
+*.ico binary

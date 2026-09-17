@@ -12,7 +12,7 @@ une pente de stabilité) n'est pas implémenté ici. L'utilisateur positionne le
 profil projet à la main via le point d'ancrage (anchor_x, anchor_z).
 
 Les formules ci-dessous ont été validées contre les valeurs réelles de la
-feuille CT1 du classeur hydrotopo_v_1_5_1.xlsx (voir tests/test_geometry.py).
+feuille CT1 du classeur hydrotopo_v_1_5_1.xlsx.
 """
 
 from core.models import CrossSection, Point, ProjectParameters

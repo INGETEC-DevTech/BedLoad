@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
         forms_layout.addWidget(self.tabs)
         
         # Checkbox pour la superposition (comme dans Streamlit)
-        self.chk_overlay = QCheckBox("Afficher le profil existant en fond (gris)")
+        self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
         self.chk_overlay.setChecked(False)
         forms_layout.addWidget(self.chk_overlay)
         

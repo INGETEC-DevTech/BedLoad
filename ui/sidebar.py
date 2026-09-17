@@ -12,21 +12,21 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.db = db_manager
         
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(5, 5, 5, 5)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(5, 5, 5, 5)
         
         # Boutons d'action
         self.btn_add_project = QPushButton("Nouveau Projet")
         self.btn_add_profile = QPushButton("Nouveau Profil (PK)")
-        self.layout.addWidget(self.btn_add_project)
-        self.layout.addWidget(self.btn_add_profile)
+        self.main_layout.addWidget(self.btn_add_project)
+        self.main_layout.addWidget(self.btn_add_profile)
         
         # Arborescence
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(True)
         self.model = QStandardItemModel()
         self.tree_view.setModel(self.model)
-        self.layout.addWidget(self.tree_view)
+        self.main_layout.addWidget(self.tree_view)
 
         # Activation du menu contextuel (clic droit)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

@@ -1,10 +1,12 @@
 import sqlite3
 import json
-import dataclasses
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
+import logging
+from core.utils import get_base_dir
 
-DB_PATH = Path("data/hydrotopo.db")
+# Construction du chemin absolu dynamique
+DB_PATH = get_base_dir() / "data" / "hydrotopo.db"
 
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
@@ -97,15 +99,17 @@ class DatabaseManager:
             return cursor.lastrowid
 
     def save_profile_state(self, profile_id: int, existing_data: List[Dict], project_params: Dict) -> None:
-        """Auto-save : Met à jour les données d'un profil spécifique (sérialisation JSON)."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE profiles 
-                SET existing_data = ?, project_params = ?, last_updated = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (json.dumps(existing_data), json.dumps(project_params), profile_id))
-            conn.commit()
+            """Auto-save : Met à jour les données d'un profil spécifique."""
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE profiles 
+                    SET existing_data = ?, project_params = ?, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (json.dumps(existing_data), json.dumps(project_params), profile_id))
+                conn.commit()
+                
+            logging.info(f"Auto-save réussi pour le profil ID {profile_id}.")
 
     def load_profile_state(self, profile_id: int) -> Tuple[List[Dict], Dict]:
         """Charge l'état d'un profil (Points existants et Paramètres projet)."""

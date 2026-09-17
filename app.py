@@ -1,7 +1,10 @@
 # app.py
 import sys
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
+import traceback
+import logging
+from core.utils import setup_logger
 
 QSS_THEME = """
 /* Base de la fenêtre */
@@ -76,23 +79,76 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: #dee2e6;
 }
+QPushButton:disabled {
+    background-color: #f8f9fa;
+    color: #adb5bd;
+    border: 1px solid #e9ecef;
+}
 
 /* Champs de saisie */
-QLineEdit, QTableWidget {
+QLineEdit, QTableWidget, QDoubleSpinBox {
     border: 1px solid #ced4da;
     border-radius: 3px;
     padding: 4px;
     background: white;
 }
-QLineEdit:focus, QTableWidget:focus {
+QLineEdit:focus, QTableWidget:focus, QDoubleSpinBox:focus {
     border: 1px solid #80bdff;
 }
+QLineEdit:disabled, QTableWidget:disabled, QDoubleSpinBox:disabled {
+    background-color: #f1f3f5;
+    color: #adb5bd;
+}
+
+/* Cases à cocher */
+QCheckBox {
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #ced4da;
+    border-radius: 3px;
+    background: white;
+}
+QCheckBox::indicator:checked {
+    background-color: #0056b3;
+    border: 1px solid #0056b3;
+}
+QCheckBox:disabled {
+    color: #adb5bd;
+}
+
+/* Groupes et onglets désactivés (formulaires grisés tant qu'aucun profil n'est sélectionné) */
+QGroupBox:disabled, QTabWidget:disabled {
+    color: #adb5bd;
+}
 """
+
+def global_exception_handler(exc_type, exc_value, exc_tb):
+    """Intercepte les erreurs critiques pour éviter la fermeture silencieuse."""
+    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
+    # Enregistrement silencieux du crash
+    logging.critical(f"Crash inattendu : {exc_value}\n{error_msg}")
+
+    msg_box = QMessageBox()
+    msg_box.setIcon(QMessageBox.Icon.Critical)
+    msg_box.setWindowTitle("Erreur critique")
+    msg_box.setText("Le logiciel a rencontré une erreur inattendue.")
+    msg_box.setInformativeText(str(exc_value))
+    msg_box.setDetailedText(error_msg)
+    msg_box.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    # Fusion applique une base neutre multi-OS, idéale pour écraser ensuite avec le QSS
+    setup_logger()
+    logging.info("=== Démarrage d'HydroTopo V2 ===")
+    
+    # Interception de toutes les erreurs globales
+    sys.excepthook = global_exception_handler
+    
     app.setStyle("Fusion") 
     app.setStyleSheet(QSS_THEME)
     
