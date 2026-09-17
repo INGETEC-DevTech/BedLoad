@@ -14,20 +14,25 @@ PROJECT_COLOR = "#9467bd"    # violet : profil projet
 
 
 def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
-    """Mise en page commune à tous les graphiques de profil : axes orthonormés
-    (comme les graphiques Python de l'Excel d'origine), fond clair, légende
-    au-dessus du graphique."""
+    """Mise en page épurée et institutionnelle du graphique Plotly."""
     fig.update_layout(
-        title=title,
-        xaxis_title="Distance (m)",
-        yaxis_title="Altitude (m NGF)",
-        template="plotly_white",
-        margin=dict(l=40, r=20, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        title=dict(text=title, font=dict(size=14, color="#495057")),
+        xaxis_title=dict(text="Distance (m)", font=dict(size=12, color="#6c757d")),
+        yaxis_title=dict(text="Altitude (m NGF)", font=dict(size=12, color="#6c757d")),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff", # Se fond parfaitement avec les onglets blancs
+        margin=dict(l=50, r=20, t=60, b=50),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(size=11, color="#495057")
+        ),
         hovermode="x unified",
         uirevision="keep_state",
+        # Grille subtile et moderne
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor="#f1f3f5", zeroline=False),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor="#f1f3f5", zeroline=False),
     )
-    # Axes orthonormés : 1 m à l'écran en X = 1 m à l'écran en Z.
+    # Axes orthonormés : 1 m écran en X = 1 m écran en Z.
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     return fig
 

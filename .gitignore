@@ -1,2 +1,19 @@
 # Environnement virtuel
 .venv/
+
+# Caches et binaires Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Base de données locale (évite de pousser les données de test sur GitHub)
+data/*.db
+*.sqlite3
+
+# Fichiers de configuration IDE (VS Code, etc.)
+.vscode/
+.idea/
+
+# Fichiers systèmes temporaires
+.DS_Store
+Thumbs.db
