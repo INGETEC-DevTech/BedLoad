@@ -11,8 +11,6 @@ from ui.views.plot_view import PlotView
 from core.controller import ProfileController, ViewMode
 
 class MainWindow(QMainWindow):
-    # Correspondance entre l'index du QTabWidget (ordre de création des onglets,
-    # ligne 45-46 ci-dessous) et le mode métier attendu par le contrôleur.
     TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT]
 
     def __init__(self):
@@ -23,35 +21,30 @@ class MainWindow(QMainWindow):
         self.controller = ProfileController()
         self.current_profile_id = None
         
-        # --- LAYOUT PRINCIPAL ---
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.setCentralWidget(main_splitter)
         
-        # 1. Panneau latéral gauche (Arbre)
+        # 1. Panneau latéral gauche
         self.sidebar = Sidebar(self.db_manager)
         main_splitter.addWidget(self.sidebar)
         
-        # --- NOUVEAU : Le gestionnaire d'affichage de la partie droite ---
-        self.right_stack = QStackedWidget()
-        main_splitter.addWidget(self.right_stack)
+        # 2. Zone de travail (Le splitter est affiché dès le départ)
+        work_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.addWidget(work_splitter)
         
-        # 2a. Écran d'accueil (Index 0 du StackedWidget)
+        # 2a. Panneau des formulaires (Caché au démarrage via StackedWidget)
+        self.forms_stack = QStackedWidget()
+        
+        # Index 0 : Message d'accueil (prend la place des formulaires vides)
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
-        welcome_label = QLabel(
-            "<h2>Bienvenue dans HydroTopo V2</h2>"
-            "<p>Sélectionnez un projet ou un profil dans l'arborescence pour commencer le dimensionnement.</p>"
-        )
-        welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_label.setStyleSheet("color: #6c757d; font-size: 14px;")
-        welcome_layout.addWidget(welcome_label)
-        self.right_stack.addWidget(welcome_widget)
+        lbl_welcome = QLabel("👈 Sélectionnez un projet ou un\nprofil dans l'arborescence")
+        lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_welcome.setStyleSheet("color: #adb5bd; font-size: 14px; font-weight: bold;")
+        welcome_layout.addWidget(lbl_welcome)
+        self.forms_stack.addWidget(welcome_widget)
         
-        # 2b. Zone de travail réelle (Index 1 du StackedWidget)
-        work_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.right_stack.addWidget(work_splitter)
-        
-        # -- Panneau des formulaires --
+        # Index 1 : Les vrais formulaires
         forms_widget = QWidget()
         forms_layout = QVBoxLayout(forms_widget)
         self.tabs = QTabWidget()
@@ -63,50 +56,42 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.form_project, "Profil projet")
         forms_layout.addWidget(self.tabs)
         
-        # Checkbox pour la superposition
         self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
         self.chk_overlay.setVisible(False)
         forms_layout.addWidget(self.chk_overlay)
         
-        work_splitter.addWidget(forms_widget)
+        self.forms_stack.addWidget(forms_widget)
+        work_splitter.addWidget(self.forms_stack)
         
-        # -- Panneau du graphique --
+        # 2b. Panneau du graphique (Toujours visible pour éviter le clignotement OpenGL)
         self.plot_view = PlotView()
         work_splitter.addWidget(self.plot_view)
         
-        # Ratios de largeur
+        # On impose la répartition de l'espace
         main_splitter.setSizes([250, 1150])
         work_splitter.setSizes([450, 700])
         
-        # --- CONNEXIONS ---
+        # Connexions
         self.sidebar.profile_selected.connect(self.load_profile)
         self.form_existing.data_changed.connect(self.save_and_update_plot)
         self.form_project.data_changed.connect(self.save_and_update_plot)
         self.chk_overlay.stateChanged.connect(self.update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
-        
-        # Masquer la case par défaut (car on démarre sur l'onglet 0)
-        self.chk_overlay.setVisible(False)
 
     def on_tab_changed(self, index: int):
-        """Gère la visibilité des options selon l'onglet actif."""
-        # Index 1 = "Profil projet" -> La case apparaît. Sinon, elle disparaît.
         self.chk_overlay.setVisible(index == 1)
         self.update_plot()
 
     def load_profile(self, profile_id: int):
         self.current_profile_id = profile_id
         
-        # On bascule l'affichage sur la zone de travail (Index 1)
-        self.right_stack.setCurrentIndex(1)
+        # Dès qu'on clique sur un profil, on révèle les formulaires
+        self.forms_stack.setCurrentIndex(1)
         
         existing_data, project_data = self.db_manager.load_profile_state(profile_id)
         
-        # Remplissage silencieux (ne déclenche pas d'events)
         self.form_existing.set_data(existing_data)
-        
         if not project_data:
-            # Valeurs par défaut si le dict est vide
             project_data = self.controller.default_project_params()
         self.form_project.set_data(project_data)
         
@@ -114,30 +99,17 @@ class MainWindow(QMainWindow):
 
     def save_and_update_plot(self, _=None):
         if self.current_profile_id is None: return
-        
-        # 1. Sauvegarde (Auto-save)
         existing_data = self.form_existing.get_data()
         project_data = self.form_project.get_data()
         self.db_manager.save_profile_state(self.current_profile_id, existing_data, project_data)
-        
-        # 2. Mise à jour du graphe
         self.update_plot()
 
     def update_plot(self, _=None):
-        if self.current_profile_id is None:
-            return
-
-        # 1. Transmission des données brutes au contrôleur
+        if self.current_profile_id is None: return
         existing_data = self.form_existing.get_data()
         project_data = self.form_project.get_data()
         mode = self.TAB_MODES[self.tabs.currentIndex()]
-
         fig = self.controller.build_figure(
-            existing_data,
-            project_data,
-            mode,
-            show_overlay=self.chk_overlay.isChecked(),
+            existing_data, project_data, mode, show_overlay=self.chk_overlay.isChecked()
         )
-
-        # 2. Affichage de ce que le contrôleur a produit
         self.plot_view.update_plot(fig)

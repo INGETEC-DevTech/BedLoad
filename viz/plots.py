@@ -92,7 +92,7 @@ def plot_overlay(
     xs_p, zs_p = project.to_arrays()
     fig = go.Figure()
     
-    # Trace du profil existant (gris)
+    # Trace du profil existant (vert)
     fig.add_trace(
         go.Scatter(
             x=xs_e, y=zs_e,
@@ -103,14 +103,14 @@ def plot_overlay(
         )
     )
     
-    # Trace du profil projet (vert)
+    # Trace du profil projet (violet) - CORRIGÉ pour correspondre au profil simple
     fig.add_trace(
         go.Scatter(
             x=xs_p, y=zs_p,
             mode="lines+markers",
             name=project.name,
-            line=dict(color=PROJECT_COLOR, width=3),
-            marker=dict(size=7, symbol="diamond"),
+            line=dict(color=PROJECT_COLOR, width=2), # Repassé à 2 (au lieu de 3)
+            marker=dict(size=6),                     # Retrait du symbol="diamond" et repassé à 6
         )
     )
 
@@ -127,10 +127,9 @@ def plot_overlay(
         )
 
     fig = _apply_common_layout(fig, f"{existing.name} vs {project.name}")
-        
+    
     # On force le cadre UNIQUEMENT sur le profil PROJET (+ 1 mètre de marge).
-    # L'existant hors-cadre ne déclenchera plus de dézoom automatique.
     fig.update_xaxes(range=[min(xs_p) - 1, max(xs_p) + 1])
     fig.update_yaxes(range=[min(zs_p) - 1, max(zs_p) + 1])
-        
+    
     return fig
