@@ -17,3 +17,6 @@ data/*.db
 # Fichiers systèmes temporaires
 .DS_Store
 Thumbs.db
+
+# Fichiers de log
+.log

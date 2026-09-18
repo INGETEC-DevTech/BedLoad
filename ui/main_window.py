@@ -1,5 +1,4 @@
 # ui/main_window.py
-import pandas as pd
 from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QCheckBox
 from PyQt6.QtCore import Qt
 
@@ -9,17 +8,19 @@ from ui.forms.existing_form import ExistingProfileForm
 from ui.forms.project_form import ProjectProfileForm
 from ui.views.plot_view import PlotView
 
-# Importation de ta logique métier existante
-from core.models import ProjectParameters, CrossSection, dataframe_to_points
-from core.geometry import build_project_cross_section
-from viz.plots import plot_single_profile, plot_overlay, PROJECT_COLOR, EXISTING_COLOR
+from core.controller import ProfileController, ViewMode
 
 class MainWindow(QMainWindow):
+    # Correspondance entre l'index du QTabWidget (ordre de création des onglets,
+    # ligne 45-46 ci-dessous) et le mode métier attendu par le contrôleur.
+    TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HydroTopo - V2 (PyQt6)")
         self.resize(1400, 800)
         self.db_manager = DatabaseManager()
+        self.controller = ProfileController()
         self.current_profile_id = None
         
         # --- LAYOUT PRINCIPAL ---
@@ -83,7 +84,7 @@ class MainWindow(QMainWindow):
         
         if not project_data:
             # Valeurs par défaut si le dict est vide
-            project_data = vars(ProjectParameters())
+            project_data = self.controller.default_project_params()
         self.form_project.set_data(project_data)
         
         self.update_plot()
@@ -100,51 +101,20 @@ class MainWindow(QMainWindow):
         self.update_plot()
 
     def update_plot(self, _=None):
-        if self.current_profile_id is None: return
-        
-        # Récupération des données brutes
+        if self.current_profile_id is None:
+            return
+
+        # 1. Transmission des données brutes au contrôleur
         existing_data = self.form_existing.get_data()
         project_data = self.form_project.get_data()
-        
-        # Paramètres d'eau
-        h_eau = project_data.get('h_eau', 0)
-        anchor_z = project_data.get('anchor_z', 0)
-        water_level = anchor_z + h_eau
-        water_x_left = project_data.get('x_eau_gauche')
-        water_x_right = project_data.get('x_eau_droite')
+        mode = self.TAB_MODES[self.tabs.currentIndex()]
 
-        current_tab_index = self.tabs.currentIndex()
-        fig = None
+        fig = self.controller.build_figure(
+            existing_data,
+            project_data,
+            mode,
+            show_overlay=self.chk_overlay.isChecked(),
+        )
 
-        if current_tab_index == 0:  # Tab "Existant"
-            df = pd.DataFrame(existing_data)
-            points = dataframe_to_points(df)
-            if len(points) >= 2:
-                section = CrossSection(name="Existant", points=points)
-                fig = plot_single_profile(section, color=EXISTING_COLOR)
-                
-        elif current_tab_index == 1:  # Tab "Projet"
-            # On instancie la dataclass en filtrant les attributs valides
-            valid_keys = ProjectParameters.__dataclass_fields__.keys()
-            filtered_params = {k: v for k, v in project_data.items() if k in valid_keys}
-            p = ProjectParameters(**filtered_params)
-            
-            section_proj = build_project_cross_section(p, name="Projet")
-            
-            if self.chk_overlay.isChecked():
-                df = pd.DataFrame(existing_data)
-                points_ext = dataframe_to_points(df)
-                section_ext = CrossSection(name="Existant", points=points_ext)
-                fig = plot_overlay(
-                    section_ext, section_proj,
-                    water_level=water_level,
-                    water_x_left=water_x_left, water_x_right=water_x_right
-                )
-            else:
-                fig = plot_single_profile(
-                    section_proj, color=PROJECT_COLOR,
-                    water_level=water_level,
-                    water_x_left=water_x_left, water_x_right=water_x_right
-                )
-                
+        # 2. Affichage de ce que le contrôleur a produit
         self.plot_view.update_plot(fig)
