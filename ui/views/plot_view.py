@@ -45,32 +45,76 @@ class PlotView(QWidget):
         <head>
             <script type="text/javascript" src="{plotly_js_filename}"></script>
             <style>
-                body {{ margin: 0; padding: 0; background-color: #ffffff; overflow: hidden; }}
-                #container {{ position: relative; width: 100vw; height: 100vh; }}
-                
-                /* Le graphique est toujours affiché en arrière-plan avec sa vraie taille */
-                #graph {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
-                
-                /* L'écran d'attente vient se superposer par-dessus comme un calque */
-                #empty-state {{ 
-                    position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; 
-                    display: flex; justify-content: center; align-items: center; 
-                    background-color: #ffffff; font-family: "Segoe UI", sans-serif; 
-                    color: #adb5bd; font-size: 14px; 
+                /* Fond de la page web unifié avec le gris de l'application */
+                body {{ 
+                    margin: 0; 
+                    padding: 20px; /* Crée l'espacement pour décoller le graphique des bords */
+                    background-color: #f8f9fa; 
+                    height: 100vh; 
+                    box-sizing: border-box;
+                    display: flex; 
+                    justify-content: center; 
+                    align-items: center; 
+                    overflow: hidden; 
                 }}
+                
+                /* La carte blanche qui contient le graphique */
+                #card {{
+                    position: relative;
+                    width: 100%;
+                    height: 100%;
+                    background-color: #ffffff;
+                    border-radius: 12px;
+                    border: 1px solid #dee2e6;
+                    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.04), 0 2px 6px rgba(0, 0, 0, 0.04);
+                    overflow: hidden;
+                }}
+                
+                /* Le graphique prend toute la place DANS la carte */
+                #graph {{ 
+                    position: absolute; 
+                    top: 0; left: 0; 
+                    width: 100%; height: 100%; 
+                    z-index: 1; 
+                }}
+                
+                /* L'écran d'attente superposé avec icône intégrée */
+                #empty-state {{ 
+                    position: absolute; 
+                    top: 0; left: 0; 
+                    width: 100%; height: 100%; 
+                    z-index: 2; 
+                    display: flex; 
+                    flex-direction: column;
+                    justify-content: center; 
+                    align-items: center; 
+                    background-color: #ffffff; 
+                    font-family: "Segoe UI", sans-serif; 
+                    color: #adb5bd; 
+                    font-size: 15px; 
+                }}
+                
+                .icon-placeholder {{ margin-bottom: 15px; opacity: 0.5; }}
             </style>
         </head>
         <body>
-            <div id="container">
+            <div id="card">
                 <div id="graph"></div>
-                <div id="empty-state">Chargement du moteur graphique...</div>
+                <div id="empty-state">
+                    <!-- Icône de graphique vectorielle (SVG) -->
+                    <svg class="icon-placeholder" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3v18h18"/>
+                        <path d="M18 9l-5 5-4-4-4 4"/>
+                    </svg>
+                    <span id="empty-state-text">Chargement du moteur graphique...</span>
+                </div>
             </div>
             
             <script>
                 function updateGraph(figData) {{
                     try {{
                         if (typeof Plotly === 'undefined') {{
-                            document.getElementById('empty-state').innerHTML = "Erreur : La librairie Plotly locale est introuvable.";
+                            document.getElementById('empty-state-text').innerHTML = "Erreur : La librairie Plotly est introuvable.";
                             return;
                         }}
                         
@@ -81,21 +125,19 @@ class PlotView(QWidget):
                             displayModeBar: 'hover'
                         }};
                         
-                        // Le graphique se dessine avec ses dimensions réelles
                         Plotly.react(graphDiv, figData.data, figData.layout, config);
                         
-                        // On masque le calque d'attente SEULEMENT une fois le rendu terminé
+                        // Masque l'écran d'attente
                         document.getElementById('empty-state').style.display = 'none';
                         
                     }} catch(err) {{
-                        // Affichage de l'erreur JS directement dans l'interface au lieu d'échouer en silence
-                        document.getElementById('empty-state').innerHTML = "Erreur d'affichage : " + err.message;
+                        document.getElementById('empty-state-text').innerHTML = "Erreur d'affichage : " + err.message;
                         document.getElementById('empty-state').style.display = 'flex';
                     }}
                 }}
                 
                 function showEmptyState() {{
-                    document.getElementById('empty-state').innerHTML = 'Données insuffisantes pour tracer le profil.';
+                    document.getElementById('empty-state-text').innerHTML = 'Données insuffisantes pour tracer le profil.';
                     document.getElementById('empty-state').style.display = 'flex';
                 }}
             </script>

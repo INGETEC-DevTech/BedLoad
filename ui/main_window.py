@@ -1,5 +1,5 @@
 # ui/main_window.py
-from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QCheckBox
+from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QCheckBox, QStackedWidget, QLabel
 from PyQt6.QtCore import Qt
 
 from database.db_manager import DatabaseManager
@@ -31,11 +31,27 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(self.db_manager)
         main_splitter.addWidget(self.sidebar)
         
-        # 2. Zone de travail (Splitter intérieur : Formulaires à gauche, Graphe à droite)
-        work_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.addWidget(work_splitter)
+        # --- NOUVEAU : Le gestionnaire d'affichage de la partie droite ---
+        self.right_stack = QStackedWidget()
+        main_splitter.addWidget(self.right_stack)
         
-        # 2a. Panneau des formulaires
+        # 2a. Écran d'accueil (Index 0 du StackedWidget)
+        welcome_widget = QWidget()
+        welcome_layout = QVBoxLayout(welcome_widget)
+        welcome_label = QLabel(
+            "<h2>Bienvenue dans HydroTopo V2</h2>"
+            "<p>Sélectionnez un projet ou un profil dans l'arborescence pour commencer le dimensionnement.</p>"
+        )
+        welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome_label.setStyleSheet("color: #6c757d; font-size: 14px;")
+        welcome_layout.addWidget(welcome_label)
+        self.right_stack.addWidget(welcome_widget)
+        
+        # 2b. Zone de travail réelle (Index 1 du StackedWidget)
+        work_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.right_stack.addWidget(work_splitter)
+        
+        # -- Panneau des formulaires --
         forms_widget = QWidget()
         forms_layout = QVBoxLayout(forms_widget)
         self.tabs = QTabWidget()
@@ -47,14 +63,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.form_project, "Profil projet")
         forms_layout.addWidget(self.tabs)
         
-        # Checkbox pour la superposition (comme dans Streamlit)
+        # Checkbox pour la superposition
         self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
-        self.chk_overlay.setChecked(False)
+        self.chk_overlay.setVisible(False)
         forms_layout.addWidget(self.chk_overlay)
         
         work_splitter.addWidget(forms_widget)
         
-        # 2b. Panneau du graphique
+        # -- Panneau du graphique --
         self.plot_view = PlotView()
         work_splitter.addWidget(self.plot_view)
         
@@ -69,10 +85,6 @@ class MainWindow(QMainWindow):
         self.chk_overlay.stateChanged.connect(self.update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         
-        # Désactiver les formulaires tant qu'aucun profil n'est sélectionné
-        forms_widget.setEnabled(False)
-        self.forms_widget = forms_widget
-        
         # Masquer la case par défaut (car on démarre sur l'onglet 0)
         self.chk_overlay.setVisible(False)
 
@@ -84,7 +96,9 @@ class MainWindow(QMainWindow):
 
     def load_profile(self, profile_id: int):
         self.current_profile_id = profile_id
-        self.forms_widget.setEnabled(True)
+        
+        # On bascule l'affichage sur la zone de travail (Index 1)
+        self.right_stack.setCurrentIndex(1)
         
         existing_data, project_data = self.db_manager.load_profile_state(profile_id)
         
