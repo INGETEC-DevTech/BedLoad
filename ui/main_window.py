@@ -67,11 +67,20 @@ class MainWindow(QMainWindow):
         self.form_existing.data_changed.connect(self.save_and_update_plot)
         self.form_project.data_changed.connect(self.save_and_update_plot)
         self.chk_overlay.stateChanged.connect(self.update_plot)
-        self.tabs.currentChanged.connect(self.update_plot)
-
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        
         # Désactiver les formulaires tant qu'aucun profil n'est sélectionné
         forms_widget.setEnabled(False)
         self.forms_widget = forms_widget
+        
+        # Masquer la case par défaut (car on démarre sur l'onglet 0)
+        self.chk_overlay.setVisible(False)
+
+    def on_tab_changed(self, index: int):
+        """Gère la visibilité des options selon l'onglet actif."""
+        # Index 1 = "Profil projet" -> La case apparaît. Sinon, elle disparaît.
+        self.chk_overlay.setVisible(index == 1)
+        self.update_plot()
 
     def load_profile(self, profile_id: int):
         self.current_profile_id = profile_id

@@ -41,35 +41,62 @@ class PlotView(QWidget):
 
         cache_dir, plotly_js_filename = _get_or_create_plotly_cache_dir()
         html_base = f"""
-        
-        
         <html>
         <head>
             <script type="text/javascript" src="{plotly_js_filename}"></script>
             <style>
-                body {{ margin: 0; padding: 0; background-color: #ffffff; }}
-                #graph {{ width: 100vw; height: 100vh; }}
-                .empty-state {{ display:flex; justify-content:center; align-items:center; height:90vh; font-family:"Segoe UI", sans-serif; color:#adb5bd; font-size:14px; }}
+                body {{ margin: 0; padding: 0; background-color: #ffffff; overflow: hidden; }}
+                #container {{ position: relative; width: 100vw; height: 100vh; }}
+                
+                /* Le graphique est toujours affiché en arrière-plan avec sa vraie taille */
+                #graph {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
+                
+                /* L'écran d'attente vient se superposer par-dessus comme un calque */
+                #empty-state {{ 
+                    position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; 
+                    display: flex; justify-content: center; align-items: center; 
+                    background-color: #ffffff; font-family: "Segoe UI", sans-serif; 
+                    color: #adb5bd; font-size: 14px; 
+                }}
             </style>
         </head>
         <body>
-            <div id="graph">
-                <div class="empty-state">Chargement du moteur graphique...</div>
+            <div id="container">
+                <div id="graph"></div>
+                <div id="empty-state">Chargement du moteur graphique...</div>
             </div>
             
             <script>
                 function updateGraph(figData) {{
-                    var graphDiv = document.getElementById('graph');
-                    var config = {{
-                        displaylogo: false,
-                        modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
-                        displayModeBar: 'hover'
-                    }};
-                    Plotly.react(graphDiv, figData.data, figData.layout, config);
+                    try {{
+                        if (typeof Plotly === 'undefined') {{
+                            document.getElementById('empty-state').innerHTML = "Erreur : La librairie Plotly locale est introuvable.";
+                            return;
+                        }}
+                        
+                        var graphDiv = document.getElementById('graph');
+                        var config = {{
+                            displaylogo: false,
+                            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+                            displayModeBar: 'hover'
+                        }};
+                        
+                        // Le graphique se dessine avec ses dimensions réelles
+                        Plotly.react(graphDiv, figData.data, figData.layout, config);
+                        
+                        // On masque le calque d'attente SEULEMENT une fois le rendu terminé
+                        document.getElementById('empty-state').style.display = 'none';
+                        
+                    }} catch(err) {{
+                        // Affichage de l'erreur JS directement dans l'interface au lieu d'échouer en silence
+                        document.getElementById('empty-state').innerHTML = "Erreur d'affichage : " + err.message;
+                        document.getElementById('empty-state').style.display = 'flex';
+                    }}
                 }}
                 
                 function showEmptyState() {{
-                    document.getElementById('graph').innerHTML = '<div class="empty-state">Données insuffisantes pour tracer le profil.</div>';
+                    document.getElementById('empty-state').innerHTML = 'Données insuffisantes pour tracer le profil.';
+                    document.getElementById('empty-state').style.display = 'flex';
                 }}
             </script>
         </body>

@@ -62,13 +62,15 @@ class ProjectParameters:
 
     # --- Position du lit ---
     keep_existing_slope: bool = False
-
+    
+    # --- Géométrie (Nouveau) ---
+    slope: float = 0.005
+    
     # --- Hydraulique ---
-    calc_mode: str = "Existant"
-    h_eau: float = 0.4225
+    calc_mode: str = "Q_FROM_H"  # "Q_FROM_H" (Calculer Débit) ou "H_FROM_Q" (Calculer Hauteur)
+    h_eau: float = 0.42
+    q_target: float = 15.0
     ks_pro: float = 25.0
-    x_eau_gauche: float = 3.78
-    x_eau_droite: float = 5.78
 
 
 def dataframe_to_points(df: pd.DataFrame) -> List[Point]:
