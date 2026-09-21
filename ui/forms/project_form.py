@@ -12,7 +12,8 @@ class ProjectProfileForm(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(0, 10, 0, 0)
+        self.main_layout.setContentsMargins(0, theme.SPACE_MD, 0, 0)
+        self.main_layout.setSpacing(theme.SPACE_MD)
         
         # --- MENU PILULE (Segmented Control) ---
         self.nav_layout = QHBoxLayout()
@@ -25,7 +26,7 @@ class ProjectProfileForm(QWidget):
         
         # Style QSS intégré pour créer l'effet pilule
         base_style = theme.qss("""
-            QPushButton { background-color: $SURFACE; border: 1px solid $BORDER_INPUT; padding: 6px 20px; color: $TEXT_SECONDARY; font-weight: bold; }
+            QPushButton { background-color: $SURFACE; border: 1px solid $BORDER_INPUT; padding: ${SPACE_SM}px ${SPACE_LG}px; color: $TEXT_SECONDARY; font-weight: bold; }
             QPushButton:checked { background-color: $PRIMARY; color: $SURFACE; border: 1px solid $PRIMARY; }
             QPushButton:hover:!checked { background-color: $HOVER; }
         """)
@@ -79,7 +80,10 @@ class ProjectProfileForm(QWidget):
         scroll.setStyleSheet("QScrollArea { border: none; }") # Évite une double bordure
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+        # Marge droite plus large : elle réserve la place de la barre de défilement.
+        layout.setContentsMargins(0, 0, theme.SPACE_MD, theme.SPACE_SM)
+        layout.setSpacing(theme.SPACE_SM)
+
         grp_anchor = QGroupBox("Ancrage & Topographie")
         form_anchor = QFormLayout(grp_anchor)
         self.inputs['anchor_x'] = self._create_spinbox(-1000, 1000, 0.1)
@@ -122,7 +126,9 @@ class ProjectProfileForm(QWidget):
     def _setup_hydro_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+        layout.setContentsMargins(0, 0, theme.SPACE_MD, theme.SPACE_SM)
+        layout.setSpacing(theme.SPACE_SM)
+
         grp_mode = QGroupBox("Mode de dimensionnement")
         layout_mode = QVBoxLayout(grp_mode)
         self.radio_calc_q = QRadioButton("Imposer H (Calculer le Débit)")

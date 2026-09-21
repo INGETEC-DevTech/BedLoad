@@ -39,6 +39,9 @@ class MainWindow(QMainWindow):
         # Index 0 : Message d'accueil (prend la place des formulaires vides)
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
+        welcome_layout.setContentsMargins(
+            theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG
+        )
         lbl_welcome = QLabel("👈 Sélectionnez un projet ou un\nprofil dans l'arborescence")
         lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_welcome.setStyleSheet(theme.qss(
@@ -50,6 +53,11 @@ class MainWindow(QMainWindow):
         # Index 1 : Les vrais formulaires
         forms_widget = QWidget()
         forms_layout = QVBoxLayout(forms_widget)
+        # Marge droite réduite : le panneau du graphique apporte déjà la sienne juste après.
+        forms_layout.setContentsMargins(
+            theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_SM, theme.SPACE_LG
+        )
+        forms_layout.setSpacing(theme.SPACE_MD)
         self.tabs = QTabWidget()
         
         self.form_existing = ExistingProfileForm()

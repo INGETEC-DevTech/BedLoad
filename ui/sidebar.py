@@ -184,14 +184,16 @@ class Sidebar(QWidget):
         ))
         
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(15, 20, 15, 15) # Plus de respiration
-        self.main_layout.setSpacing(12)
+        self.main_layout.setContentsMargins(
+            theme.SPACE_LG, theme.SPACE_XL, theme.SPACE_LG, theme.SPACE_LG
+        )
+        self.main_layout.setSpacing(theme.SPACE_MD)
         
         # 2. Boutons d'action : Primaire et Secondaire
         self.btn_add_project = QPushButton("+ Nouveau Projet")
         self.btn_add_project.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_project.setStyleSheet(theme.qss("""
-            QPushButton { background-color: $PRIMARY; color: $SURFACE; border: none; border-radius: ${RADIUS_MD}px; padding: 8px 12px; font-weight: bold; }
+            QPushButton { background-color: $PRIMARY; color: $SURFACE; border: none; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
             QPushButton:hover { background-color: $PRIMARY_HOVER; }
             QPushButton:pressed { background-color: $PRIMARY_PRESSED; }
         """))
@@ -199,7 +201,7 @@ class Sidebar(QWidget):
         self.btn_add_profile = QPushButton("+ Nouveau Profil (PK)")
         self.btn_add_profile.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_profile.setStyleSheet(theme.qss("""
-            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: 8px 12px; font-weight: bold; }
+            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
             QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
             QPushButton:pressed { background-color: $HOVER; }
         """))

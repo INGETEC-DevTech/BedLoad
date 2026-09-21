@@ -25,13 +25,13 @@ QGroupBox {
     font-weight: bold;
     border: none;
     border-top: 1px solid $BORDER;
-    margin-top: 20px;
-    padding-top: 10px;
+    margin-top: ${SPACE_XL}px;
+    padding-top: ${SPACE_MD}px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding-bottom: 5px;
+    padding-bottom: ${SPACE_XS}px;
     color: $TEXT_SECONDARY;
 }
 
@@ -44,7 +44,7 @@ QTabWidget::pane {
 QTabBar::tab {
     background: $HOVER;
     border: 1px solid $BORDER;
-    padding: 8px 20px;
+    padding: ${SPACE_SM}px ${SPACE_LG}px;
     margin-right: 2px;
     border-top-left-radius: ${RADIUS_SM}px;
     border-top-right-radius: ${RADIUS_SM}px;
@@ -61,7 +61,7 @@ QPushButton {
     background-color: $SURFACE;
     border: 1px solid $BORDER_INPUT;
     border-radius: ${RADIUS_SM}px;
-    padding: 6px 12px;
+    padding: ${SPACE_SM}px ${SPACE_MD}px;
 }
 QPushButton:hover {
     background-color: $HOVER;
@@ -79,7 +79,7 @@ QPushButton:disabled {
 QLineEdit, QTableWidget, QDoubleSpinBox {
     border: 1px solid $BORDER_INPUT;
     border-radius: 3px;
-    padding: 4px;
+    padding: ${SPACE_XS}px ${SPACE_SM}px;
     background: $SURFACE;
 }
 QLineEdit:focus, QTableWidget:focus, QDoubleSpinBox:focus {
@@ -92,7 +92,7 @@ QLineEdit:disabled, QTableWidget:disabled, QDoubleSpinBox:disabled {
 
 /* Cases à cocher */
 QCheckBox {
-    spacing: 8px;
+    spacing: ${SPACE_SM}px;
 }
 QCheckBox::indicator {
     width: 16px;

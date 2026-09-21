@@ -21,8 +21,10 @@ class PlotView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(15, 15, 15, 15)
-        self.main_layout.setSpacing(15)
+        self.main_layout.setContentsMargins(
+            theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG
+        )
+        self.main_layout.setSpacing(theme.SPACE_LG)
         
         # --- EN-TÊTE ---
         self.header_layout = QHBoxLayout()
@@ -37,7 +39,7 @@ class PlotView(QWidget):
         self.btn_export = QPushButton("📷 Exporter l'image")
         self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_export.setStyleSheet(theme.qss("""
-            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: 6px 12px; font-weight: bold; }
+            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
             QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
         """))
         self.header_layout.addWidget(self.btn_export)
@@ -62,7 +64,7 @@ class PlotView(QWidget):
                 #card {{ position: relative; width: 100%; height: 100%; background-color: {theme.SURFACE}; border-radius: 10px; border: 1px solid {theme.BORDER}; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden; }}
                 #graph {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
                 #empty-state {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; display: flex; flex-direction: column; justify-content: center; align-items: center; background-color: {theme.SURFACE}; font-family: {theme.FONT_FAMILY}; color: {theme.TEXT_MUTED}; font-size: {theme.FONT_SIZE_TITLE}px; }}
-                .icon-placeholder {{ margin-bottom: 15px; opacity: 0.5; }}
+                .icon-placeholder {{ margin-bottom: {theme.SPACE_LG}px; opacity: 0.5; }}
             </style>
         </head>
         <body>

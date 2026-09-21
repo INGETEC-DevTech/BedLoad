@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetIte
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QKeySequence
 
+from ui import theme
+
 
 class _PasteableTableWidget(QTableWidget):
     """QTableWidget qui délègue Ctrl+C / Ctrl+V au formulaire parent
@@ -30,6 +32,8 @@ class ExistingProfileForm(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, theme.SPACE_MD, 0, 0)
+        self.main_layout.setSpacing(theme.SPACE_MD)
 
         label = QLabel("<b>Profil en travers existant</b><br><i>Renseignez les points (X = distance, Z = altitude).</i>")
         self.main_layout.addWidget(label)
