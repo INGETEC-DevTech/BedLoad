@@ -19,4 +19,4 @@ data/*.db
 Thumbs.db
 
 # Fichiers de log
-.log
+*.log
