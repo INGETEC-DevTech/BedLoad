@@ -5,21 +5,26 @@ from ui.main_window import MainWindow
 import traceback
 import logging
 from core.utils import setup_logger
+from ui import theme
 
-QSS_THEME = """
+# Le bloc QTreeView a été retiré de ce thème global : la sidebar redéfinit entièrement
+# l'apparence de son arbre (feuille de style locale + delegate qui peint chaque ligne),
+# donc ces règles étaient écrasées sans effet. Idem pour QGroupBox/QTabWidget:disabled,
+# qui décrivaient un état "formulaire grisé" remplacé depuis par la page d'accueil.
+QSS_THEME = theme.qss("""
 /* Base de la fenêtre */
 QMainWindow, QWidget {
-    background-color: #f8f9fa;
-    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-    font-size: 13px;
-    color: #212529;
+    background-color: $BACKGROUND;
+    font-family: $FONT_FAMILY;
+    font-size: ${FONT_SIZE_BASE}px;
+    color: $TEXT_PRIMARY;
 }
 
 /* Allègement des cadres (QGroupBox) */
 QGroupBox {
     font-weight: bold;
     border: none;
-    border-top: 1px solid #dee2e6;
+    border-top: 1px solid $BORDER;
     margin-top: 20px;
     padding-top: 10px;
 }
@@ -27,77 +32,62 @@ QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     padding-bottom: 5px;
-    color: #495057;
+    color: $TEXT_SECONDARY;
 }
 
 /* Onglets modernisés */
 QTabWidget::pane {
-    border: 1px solid #dee2e6;
-    background: white;
-    border-radius: 4px;
+    border: 1px solid $BORDER;
+    background: $SURFACE;
+    border-radius: ${RADIUS_SM}px;
 }
 QTabBar::tab {
-    background: #e9ecef;
-    border: 1px solid #dee2e6;
+    background: $HOVER;
+    border: 1px solid $BORDER;
     padding: 8px 20px;
     margin-right: 2px;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
+    border-top-left-radius: ${RADIUS_SM}px;
+    border-top-right-radius: ${RADIUS_SM}px;
 }
 QTabBar::tab:selected {
-    background: white;
-    border-bottom-color: white;
-    color: #0056b3;
-    font-weight: bold;
-}
-
-/* Arbre de navigation */
-QTreeView {
-    background-color: white;
-    border: 1px solid #dee2e6;
-    border-radius: 4px;
-}
-QTreeView::item {
-    padding: 6px;
-}
-QTreeView::item:selected {
-    background-color: #e6f2ff;
-    color: #0056b3;
+    background: $SURFACE;
+    border-bottom-color: $SURFACE;
+    color: $PRIMARY_TEXT;
     font-weight: bold;
 }
 
 /* Boutons flat design */
 QPushButton {
-    background-color: #ffffff;
-    border: 1px solid #ced4da;
-    border-radius: 4px;
+    background-color: $SURFACE;
+    border: 1px solid $BORDER_INPUT;
+    border-radius: ${RADIUS_SM}px;
     padding: 6px 12px;
 }
 QPushButton:hover {
-    background-color: #e9ecef;
+    background-color: $HOVER;
 }
 QPushButton:pressed {
-    background-color: #dee2e6;
+    background-color: $PRESSED;
 }
 QPushButton:disabled {
-    background-color: #f8f9fa;
-    color: #adb5bd;
-    border: 1px solid #e9ecef;
+    background-color: $BACKGROUND;
+    color: $TEXT_MUTED;
+    border: 1px solid $HOVER;
 }
 
 /* Champs de saisie */
 QLineEdit, QTableWidget, QDoubleSpinBox {
-    border: 1px solid #ced4da;
+    border: 1px solid $BORDER_INPUT;
     border-radius: 3px;
     padding: 4px;
-    background: white;
+    background: $SURFACE;
 }
 QLineEdit:focus, QTableWidget:focus, QDoubleSpinBox:focus {
-    border: 1px solid #80bdff;
+    border: 1px solid $BORDER_FOCUS;
 }
 QLineEdit:disabled, QTableWidget:disabled, QDoubleSpinBox:disabled {
-    background-color: #f1f3f5;
-    color: #adb5bd;
+    background-color: $SURFACE_ALT;
+    color: $TEXT_MUTED;
 }
 
 /* Cases à cocher */
@@ -107,23 +97,18 @@ QCheckBox {
 QCheckBox::indicator {
     width: 16px;
     height: 16px;
-    border: 1px solid #ced4da;
+    border: 1px solid $BORDER_INPUT;
     border-radius: 3px;
-    background: white;
+    background: $SURFACE;
 }
 QCheckBox::indicator:checked {
-    background-color: #0056b3;
-    border: 1px solid #0056b3;
+    background-color: $PRIMARY;
+    border: 1px solid $PRIMARY;
 }
 QCheckBox:disabled {
-    color: #adb5bd;
+    color: $TEXT_MUTED;
 }
-
-/* Groupes et onglets désactivés (formulaires grisés tant qu'aucun profil n'est sélectionné) */
-QGroupBox:disabled, QTabWidget:disabled {
-    color: #adb5bd;
-}
-"""
+""")
 
 def global_exception_handler(exc_type, exc_value, exc_tb):
     """Intercepte les erreurs critiques pour éviter la fermeture silencieuse."""

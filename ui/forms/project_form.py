@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QStackedWidget,
                                 QHBoxLayout, QPushButton, QButtonGroup)
 from PyQt6.QtCore import pyqtSignal
 
+from ui import theme
+
 class ProjectProfileForm(QWidget):
     data_changed = pyqtSignal(dict)
     
@@ -22,13 +24,18 @@ class ProjectProfileForm(QWidget):
         self.btn_geo.setChecked(True)
         
         # Style QSS intégré pour créer l'effet pilule
-        base_style = """
-            QPushButton { background-color: #ffffff; border: 1px solid #ced4da; padding: 6px 20px; color: #495057; font-weight: bold; }
-            QPushButton:checked { background-color: #0056b3; color: white; border: 1px solid #0056b3; }
-            QPushButton:hover:!checked { background-color: #e9ecef; }
-        """
-        self.btn_geo.setStyleSheet(base_style + "border-top-left-radius: 12px; border-bottom-left-radius: 12px; border-right: none;")
-        self.btn_hydro.setStyleSheet(base_style + "border-top-right-radius: 12px; border-bottom-right-radius: 12px;")
+        base_style = theme.qss("""
+            QPushButton { background-color: $SURFACE; border: 1px solid $BORDER_INPUT; padding: 6px 20px; color: $TEXT_SECONDARY; font-weight: bold; }
+            QPushButton:checked { background-color: $PRIMARY; color: $SURFACE; border: 1px solid $PRIMARY; }
+            QPushButton:hover:!checked { background-color: $HOVER; }
+        """)
+        radius = theme.RADIUS_PILL
+        self.btn_geo.setStyleSheet(
+            base_style + f"border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; border-right: none;"
+        )
+        self.btn_hydro.setStyleSheet(
+            base_style + f"border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px;"
+        )
         
         self.btn_group = QButtonGroup(self)
         self.btn_group.addButton(self.btn_geo, 0)

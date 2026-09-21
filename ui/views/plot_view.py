@@ -7,6 +7,8 @@ from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton
 
+from ui import theme
+
 def _get_or_create_plotly_cache_dir() -> tuple[Path, str]:
     cache_dir = Path(tempfile.gettempdir()) / "hydrotopo_plotly_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -25,17 +27,19 @@ class PlotView(QWidget):
         # --- EN-TÊTE ---
         self.header_layout = QHBoxLayout()
         self.lbl_title = QLabel("Visualisation de la coupe transversale")
-        self.lbl_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #212529;")
+        self.lbl_title.setStyleSheet(theme.qss(
+            "font-size: 16px; font-weight: bold; color: $TEXT_PRIMARY;"
+        ))
         self.header_layout.addWidget(self.lbl_title)
         
         self.header_layout.addStretch() 
         
         self.btn_export = QPushButton("📷 Exporter l'image")
         self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_export.setStyleSheet("""
-            QPushButton { background-color: #ffffff; color: #495057; border: 1px solid #ced4da; border-radius: 6px; padding: 6px 12px; font-weight: bold; }
-            QPushButton:hover { background-color: #f8f9fa; border-color: #b6bec5; }
-        """)
+        self.btn_export.setStyleSheet(theme.qss("""
+            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
+        """))
         self.header_layout.addWidget(self.btn_export)
         self.main_layout.addLayout(self.header_layout)
         
@@ -55,9 +59,9 @@ class PlotView(QWidget):
             <script type="text/javascript" src="{plotly_js_filename}"></script>
             <style>
                 body {{ margin: 0; padding: 0; background-color: transparent; height: 100vh; overflow: hidden; }}
-                #card {{ position: relative; width: 100%; height: 100%; background-color: #ffffff; border-radius: 10px; border: 1px solid #dee2e6; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden; }}
+                #card {{ position: relative; width: 100%; height: 100%; background-color: {theme.SURFACE}; border-radius: 10px; border: 1px solid {theme.BORDER}; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden; }}
                 #graph {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
-                #empty-state {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; display: flex; flex-direction: column; justify-content: center; align-items: center; background-color: #ffffff; font-family: "Segoe UI", sans-serif; color: #adb5bd; font-size: 15px; }}
+                #empty-state {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; display: flex; flex-direction: column; justify-content: center; align-items: center; background-color: {theme.SURFACE}; font-family: {theme.FONT_FAMILY}; color: {theme.TEXT_MUTED}; font-size: {theme.FONT_SIZE_TITLE}px; }}
                 .icon-placeholder {{ margin-bottom: 15px; opacity: 0.5; }}
             </style>
         </head>

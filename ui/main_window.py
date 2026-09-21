@@ -7,6 +7,7 @@ from ui.sidebar import Sidebar
 from ui.forms.existing_form import ExistingProfileForm
 from ui.forms.project_form import ProjectProfileForm
 from ui.views.plot_view import PlotView
+from ui import theme
 
 from core.controller import ProfileController, ViewMode
 
@@ -40,7 +41,9 @@ class MainWindow(QMainWindow):
         welcome_layout = QVBoxLayout(welcome_widget)
         lbl_welcome = QLabel("👈 Sélectionnez un projet ou un\nprofil dans l'arborescence")
         lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_welcome.setStyleSheet("color: #adb5bd; font-size: 14px; font-weight: bold;")
+        lbl_welcome.setStyleSheet(theme.qss(
+            "color: $TEXT_MUTED; font-size: ${FONT_SIZE_VALUE}px; font-weight: bold;"
+        ))
         welcome_layout.addWidget(lbl_welcome)
         self.forms_stack.addWidget(welcome_widget)
         
@@ -73,7 +76,12 @@ class MainWindow(QMainWindow):
         # On impose la répartition de l'espace
         main_splitter.setSizes([250, 1150])
         work_splitter.setSizes([450, 700])
-        
+
+        # Poignées non redimensionnables à la souris (juste visibles) : les proportions
+        # ci-dessus restent la seule base de calcul, y compris au redimensionnement fenêtre.
+        main_splitter.handle(1).setEnabled(False)
+        work_splitter.handle(1).setEnabled(False)
+
         # Connexions
         self.sidebar.profile_selected.connect(self.load_profile)
         self.sidebar.project_selected.connect(self.load_project_longitudinal)

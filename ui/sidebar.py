@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
 from database.db_manager import DatabaseManager
+from ui import theme
 
 
 class _TreeItemDelegate(QStyledItemDelegate):
@@ -61,15 +62,15 @@ class _TreeItemDelegate(QStyledItemDelegate):
         # transitoire seulement. Actif : pas de bandeau plein, juste une fine barre à gauche.
         if hovered:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor("#e9ecef")))
+            painter.setBrush(QBrush(QColor(theme.HOVER)))
             painter.drawRoundedRect(QRectF(rect.adjusted(4, 3, -4, -3)), 6, 6)
 
         if is_active:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor("#0d6efd")))
+            painter.setBrush(QBrush(QColor(theme.PRIMARY)))
             painter.drawRoundedRect(QRectF(rect.left() + 1, rect.top() + 2, 3, rect.height() - 4), 1.5, 1.5)
 
-        text_color = QColor("#0d6efd") if is_active else QColor("#212529")
+        text_color = QColor(theme.PRIMARY_TEXT) if is_active else QColor(theme.TEXT_PRIMARY)
 
         # Chevron d'expand/collapse, dessiné avant l'icône dossier. Seul un clic dans cette
         # zone plie/déplie (cf. _ProjectTreeView.mousePressEvent) : cliquer ailleurs sur la
@@ -79,7 +80,7 @@ class _TreeItemDelegate(QStyledItemDelegate):
         chevron_font.setPointSize(12)
         chevron_font.setBold(True)
         painter.setFont(chevron_font)
-        painter.setPen(QPen(QColor("#495057")))
+        painter.setPen(QPen(QColor(theme.TEXT_SECONDARY)))
         chevron_x = rect.left() + self.CHEVRON_X_OFFSET
         painter.drawText(
             QRectF(chevron_x, rect.top(), self.CHEVRON_ZONE_WIDTH, rect.height()),
@@ -109,14 +110,14 @@ class _TreeItemDelegate(QStyledItemDelegate):
         # pour rester visuellement "sous" le projet plutôt qu'à son niveau.
         if selected:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor("#e6f2ff")))
+            painter.setBrush(QBrush(QColor(theme.PRIMARY_LIGHT)))
             painter.drawRoundedRect(QRectF(rect.adjusted(4, 2, -4, -2)), 6, 6)
         elif hovered:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor("#f8f9fa")))
+            painter.setBrush(QBrush(QColor(theme.BACKGROUND)))
             painter.drawRoundedRect(QRectF(rect.adjusted(4, 2, -4, -2)), 6, 6)
 
-        dot_color = QColor("#0d6efd") if selected else QColor("#adb5bd")
+        dot_color = QColor(theme.PRIMARY) if selected else QColor(theme.TEXT_MUTED)
         dot_size = 6
         dot_x = rect.left() + 36
         dot_y = rect.center().y()
@@ -124,7 +125,7 @@ class _TreeItemDelegate(QStyledItemDelegate):
         painter.setBrush(QBrush(dot_color))
         painter.drawEllipse(QRectF(dot_x - dot_size / 2, dot_y - dot_size / 2, dot_size, dot_size))
 
-        text_color = QColor("#0d6efd") if selected else QColor("#495057")
+        text_color = QColor(theme.PRIMARY_TEXT) if selected else QColor(theme.TEXT_SECONDARY)
         font = painter.font()
         font.setBold(selected)
         painter.setFont(font)
@@ -178,7 +179,9 @@ class Sidebar(QWidget):
 
         # 1. Contraste : Fond légèrement grisé pour détacher le panneau
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("Sidebar { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }")
+        self.setStyleSheet(theme.qss(
+            "Sidebar { background-color: $BACKGROUND; border-right: 1px solid $BORDER; }"
+        ))
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(15, 20, 15, 15) # Plus de respiration
@@ -187,19 +190,19 @@ class Sidebar(QWidget):
         # 2. Boutons d'action : Primaire et Secondaire
         self.btn_add_project = QPushButton("+ Nouveau Projet")
         self.btn_add_project.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_add_project.setStyleSheet("""
-            QPushButton { background-color: #0d6efd; color: white; border: none; border-radius: 6px; padding: 8px 12px; font-weight: bold; }
-            QPushButton:hover { background-color: #0b5ed7; }
-            QPushButton:pressed { background-color: #0a58ca; }
-        """)
+        self.btn_add_project.setStyleSheet(theme.qss("""
+            QPushButton { background-color: $PRIMARY; color: $SURFACE; border: none; border-radius: ${RADIUS_MD}px; padding: 8px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: $PRIMARY_HOVER; }
+            QPushButton:pressed { background-color: $PRIMARY_PRESSED; }
+        """))
         
         self.btn_add_profile = QPushButton("+ Nouveau Profil (PK)")
         self.btn_add_profile.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_add_profile.setStyleSheet("""
-            QPushButton { background-color: #ffffff; color: #495057; border: 1px solid #ced4da; border-radius: 6px; padding: 8px 12px; font-weight: bold; }
-            QPushButton:hover { background-color: #f8f9fa; border-color: #b6bec5; }
-            QPushButton:pressed { background-color: #e9ecef; }
-        """)
+        self.btn_add_profile.setStyleSheet(theme.qss("""
+            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: 8px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
+            QPushButton:pressed { background-color: $HOVER; }
+        """))
         
         self.main_layout.addWidget(self.btn_add_project)
         self.main_layout.addWidget(self.btn_add_profile)
