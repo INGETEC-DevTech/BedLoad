@@ -61,18 +61,22 @@ class MainWindow(QMainWindow):
         forms_layout.addWidget(self.chk_overlay)
         
         self.forms_stack.addWidget(forms_widget)
+
         work_splitter.addWidget(self.forms_stack)
-        
+
         # 2b. Panneau du graphique (Toujours visible pour éviter le clignotement OpenGL)
         self.plot_view = PlotView()
         work_splitter.addWidget(self.plot_view)
-        
+
+        self._work_splitter = work_splitter
+
         # On impose la répartition de l'espace
         main_splitter.setSizes([250, 1150])
         work_splitter.setSizes([450, 700])
         
         # Connexions
         self.sidebar.profile_selected.connect(self.load_profile)
+        self.sidebar.project_selected.connect(self.load_project_longitudinal)
         self.form_existing.data_changed.connect(self.save_and_update_plot)
         self.form_project.data_changed.connect(self.save_and_update_plot)
         self.chk_overlay.stateChanged.connect(self.update_plot)
@@ -84,18 +88,34 @@ class MainWindow(QMainWindow):
 
     def load_profile(self, profile_id: int):
         self.current_profile_id = profile_id
-        
-        # Dès qu'on clique sur un profil, on révèle les formulaires
+
+        # Dès qu'on clique sur un profil, on révèle les formulaires à côté du graphique
+        self.forms_stack.show()
         self.forms_stack.setCurrentIndex(1)
-        
+        self._work_splitter.setSizes([450, 700])
+        self.plot_view.lbl_title.setText("Visualisation de la coupe transversale")
+
         existing_data, project_data = self.db_manager.load_profile_state(profile_id)
-        
+
         self.form_existing.set_data(existing_data)
         if not project_data:
             project_data = self.controller.default_project_params()
         self.form_project.set_data(project_data)
-        
+
         self.update_plot()
+
+    def load_project_longitudinal(self, project_id: int):
+        """Clic sur le nœud projet : bascule la vue centrale vers le profil en long agrégé
+        (vue de contrôle en lecture seule, sans formulaire ni recalcul). Le panneau de
+        formulaires est entièrement masqué : le graphique occupe alors toute la largeur
+        disponible et il n'y a plus de poignée de scission à faire glisser pour le cacher."""
+        self.current_profile_id = None
+        self.forms_stack.hide()
+        self.plot_view.lbl_title.setText("Profil en long du projet")
+
+        rows = self.db_manager.get_longitudinal_data(project_id)
+        fig = self.controller.build_longitudinal_figure(rows)
+        self.plot_view.update_plot(fig)
 
     def save_and_update_plot(self, _=None):
         if self.current_profile_id is None: return

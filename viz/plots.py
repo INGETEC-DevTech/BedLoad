@@ -8,6 +8,7 @@ plotly.graph_objects.Figure, que la couche UI se charge d'afficher.
 import plotly.graph_objects as go
 
 from core.models import CrossSection
+from core.longitudinal import LongitudinalProfile
 
 EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
@@ -131,5 +132,40 @@ def plot_overlay(
     # On force le cadre UNIQUEMENT sur le profil PROJET (+ 1 mètre de marge).
     fig.update_xaxes(range=[min(xs_p) - 1, max(xs_p) + 1])
     fig.update_yaxes(range=[min(zs_p) - 1, max(zs_p) + 1])
-    
+
+    return fig
+
+
+def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
+    """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
+    (anchor_z), chacun tracé en fonction du PK. Contrairement aux coupes transversales,
+    les axes ne sont volontairement PAS orthonormés (le PK s'étend typiquement sur des
+    centaines de mètres pour quelques mètres d'altitude)."""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=profile.pk_existing, y=profile.z_existing,
+            mode="lines+markers",
+            name="TN existant (thalweg)",
+            line=dict(color=EXISTING_COLOR, width=2),
+            marker=dict(size=6),
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=profile.pk_project, y=profile.z_project,
+            mode="lines+markers",
+            name="Projet (fond de lit)",
+            line=dict(color=PROJECT_COLOR, width=2),
+            marker=dict(size=6),
+        )
+    )
+
+    fig = _apply_common_layout(fig, "Profil en long")
+    fig.update_layout(xaxis_title=dict(text="PK", font=dict(size=12, color="#6c757d")))
+    # On annule l'échelle orthonormée héritée de _apply_common_layout : non pertinente ici.
+    fig.update_yaxes(scaleanchor=None, scaleratio=None)
+
     return fig

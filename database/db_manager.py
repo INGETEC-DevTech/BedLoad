@@ -59,7 +59,8 @@ class DatabaseManager:
             
             for project in projects:
                 cursor.execute(
-                    "SELECT id, pk_name FROM profiles WHERE project_id = ? ORDER BY pk_name", 
+                    """SELECT id, pk_name FROM profiles WHERE project_id = ?
+                       ORDER BY CAST(REPLACE(pk_name, ',', '.') AS REAL)""",
                     (project["id"],)
                 )
                 project["profiles"] = [dict(row) for row in cursor.fetchall()]
@@ -139,6 +140,39 @@ class DatabaseManager:
                 conn.commit()
             except sqlite3.IntegrityError:
                 raise ValueError(f"Le PK '{new_pk_name}' existe déjà dans ce projet.")
+
+    def get_longitudinal_data(self, project_id: int) -> List[Tuple[float, float, float]]:
+        """Pour le profil en long : un triplet (pk, altitude mini du TN existant, anchor_z du
+        projet) par profil du projet, trié par PK numérique croissant. Les profils dont le nom
+        de PK n'est pas numérique (ancien nom type 'test 2') sont ignorés. Les profils sans
+        points existants, ou sans paramètres projet enregistrés, renvoient None sur la valeur
+        manquante plutôt que d'être exclus entièrement."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT pk_name, existing_data, project_params FROM profiles WHERE project_id = ?",
+                (project_id,)
+            )
+            rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            try:
+                pk = float(row["pk_name"].replace(',', '.'))
+            except (TypeError, ValueError):
+                continue
+
+            existing_data = json.loads(row["existing_data"]) if row["existing_data"] else []
+            z_values = [pt["Z (m NGF)"] for pt in existing_data if "Z (m NGF)" in pt]
+            min_z_existing = min(z_values) if z_values else None
+
+            project_params = json.loads(row["project_params"]) if row["project_params"] else {}
+            anchor_z_project = project_params.get("anchor_z")
+
+            result.append((pk, min_z_existing, anchor_z_project))
+
+        result.sort(key=lambda t: t[0])
+        return result
 
     def delete_project(self, project_id: int) -> None:
         """Supprime un projet et tous ses profils associés (grâce au CASCADE)."""

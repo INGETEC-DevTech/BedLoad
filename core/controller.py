@@ -1,14 +1,15 @@
 # core/controller.py
 from __future__ import annotations
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import plotly.graph_objects as go
 
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import compute_hydraulic_params, find_water_level_for_discharge
-from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile
+from core.longitudinal import build_longitudinal_profile
+from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 
 class ViewMode(Enum):
     EXISTING = "existing"
@@ -32,6 +33,16 @@ class ProfileController:
     @staticmethod
     def default_project_params() -> Dict[str, Any]:
         return vars(ProjectParameters())
+
+    def build_longitudinal_figure(
+        self, rows: List[Tuple[float, Optional[float], Optional[float]]]
+    ) -> Optional[go.Figure]:
+        """Construit le profil en long d'un projet à partir des triplets
+        (pk, min_z_existant, anchor_z_projet) renvoyés par DatabaseManager.get_longitudinal_data."""
+        profile = build_longitudinal_profile(rows)
+        if not profile.pk_existing and not profile.pk_project:
+            return None
+        return plot_longitudinal_profile(profile)
 
     def _build_existing_figure(self, existing_data: List[Dict[str, Any]]) -> Optional[go.Figure]:
         section = self._to_cross_section(existing_data, name="Existant")
