@@ -14,6 +14,12 @@ class ProjectProfileForm(QWidget):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, theme.SPACE_MD, 0, 0)
         self.main_layout.setSpacing(theme.SPACE_MD)
+
+        # Niveau 3 de la hiérarchie typographique : les libellés restent en retrait des
+        # valeurs qu'ils décrivent (14px, cf. la règle globale sur les champs de saisie).
+        self.setStyleSheet(theme.qss("""
+            QLabel, QRadioButton { font-size: ${FONT_SIZE_BASE}px; color: $TEXT_SECONDARY; }
+        """))
         
         # --- MENU PILULE (Segmented Control) ---
         self.nav_layout = QHBoxLayout()

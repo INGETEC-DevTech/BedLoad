@@ -35,8 +35,25 @@ class ExistingProfileForm(QWidget):
         self.main_layout.setContentsMargins(0, theme.SPACE_MD, 0, 0)
         self.main_layout.setSpacing(theme.SPACE_MD)
 
-        label = QLabel("<b>Profil en travers existant</b><br><i>Renseignez les points (X = distance, Z = altitude).</i>")
-        self.main_layout.addWidget(label)
+        # Titre de section et texte d'aide séparés : ils portent deux niveaux typographiques
+        # distincts, qu'un unique QLabel en HTML ne permettait pas de distinguer nettement.
+        # Ils sont regroupés dans un layout serré pour rester lus comme un seul bloc.
+        header_layout = QVBoxLayout()
+        header_layout.setSpacing(theme.SPACE_XS)
+
+        self.lbl_title = QLabel("Profil en travers existant")
+        self.lbl_title.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_TITLE}px; font-weight: bold; color: $TEXT_SECONDARY;"
+        ))
+        header_layout.addWidget(self.lbl_title)
+
+        self.lbl_hint = QLabel("Renseignez les points (X = distance, Z = altitude).")
+        self.lbl_hint.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
+        ))
+        header_layout.addWidget(self.lbl_hint)
+
+        self.main_layout.addLayout(header_layout)
 
         # Tableau de saisie
         self.table = _PasteableTableWidget(0, 2, self)

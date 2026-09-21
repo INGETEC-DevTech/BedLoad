@@ -28,10 +28,12 @@ QGroupBox {
     margin-top: ${SPACE_XL}px;
     padding-top: ${SPACE_MD}px;
 }
+/* Niveau 1 de la hiérarchie typographique : titre de section */
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     padding-bottom: ${SPACE_XS}px;
+    font-size: ${FONT_SIZE_TITLE}px;
     color: $TEXT_SECONDARY;
 }
 
@@ -75,12 +77,25 @@ QPushButton:disabled {
     border: 1px solid $HOVER;
 }
 
-/* Champs de saisie */
+/* Champs de saisie — niveau 2 : la valeur saisie prime sur son libellé */
 QLineEdit, QTableWidget, QDoubleSpinBox {
     border: 1px solid $BORDER_INPUT;
     border-radius: 3px;
     padding: ${SPACE_XS}px ${SPACE_SM}px;
     background: $SURFACE;
+    font-size: ${FONT_SIZE_VALUE}px;
+    color: $TEXT_PRIMARY;
+}
+
+/* En-têtes de tableau : rôle de libellé, donc même niveau que les labels de champs */
+QHeaderView::section {
+    background-color: $BACKGROUND;
+    border: none;
+    border-bottom: 1px solid $BORDER;
+    padding: ${SPACE_SM}px;
+    font-size: ${FONT_SIZE_BASE}px;
+    font-weight: bold;
+    color: $TEXT_SECONDARY;
 }
 QLineEdit:focus, QTableWidget:focus, QDoubleSpinBox:focus {
     border: 1px solid $BORDER_FOCUS;
