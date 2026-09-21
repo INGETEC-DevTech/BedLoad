@@ -176,6 +176,8 @@ class Sidebar(QWidget):
         # Ids déjà vus au moins une fois : un projet absent de cet ensemble est "nouveau"
         # et sera déplié par défaut lors de son premier affichage.
         self._known_project_ids = set()
+        # Libellés (projet, PK) de la sélection courante, pour le bandeau de contexte.
+        self._context_labels = None
 
         # 1. Contraste : Fond légèrement grisé pour détacher le panneau
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -327,16 +329,25 @@ class Sidebar(QWidget):
         self.db.create_or_get_profile(data["id"], name)
         self.refresh_tree()
 
+    def current_context(self):
+        """Libellés (nom du projet, nom du PK) de la sélection courante, ou None si aucun
+        profil n'est sélectionné. Alimente le bandeau de contexte de la fenêtre principale,
+        qui ne reçoit sinon qu'un identifiant numérique via profile_selected."""
+        return self._context_labels
+
     def on_item_clicked(self, index):
         item = self.model.itemFromIndex(index)
         data = item.data(Qt.ItemDataRole.UserRole)
         if data["type"] == "profile":
-            parent_data = item.parent().data(Qt.ItemDataRole.UserRole)
+            parent_item = item.parent()
+            parent_data = parent_item.data(Qt.ItemDataRole.UserRole)
             self._active_project_id = parent_data["id"]
+            self._context_labels = (parent_item.text(), item.text())
             self.tree_view.viewport().update()
             self.profile_selected.emit(data["id"])
         elif data["type"] == "project":
             self._active_project_id = data["id"]
+            self._context_labels = None
             # Le pliage/dépliage est géré par _ProjectTreeView.mousePressEvent (chevron
             # uniquement) : un clic ailleurs sur la ligne ne fait que sélectionner le projet.
             self.tree_view.viewport().update()

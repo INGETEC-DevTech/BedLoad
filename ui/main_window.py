@@ -1,4 +1,6 @@
 # ui/main_window.py
+from html import escape
+
 from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QCheckBox, QStackedWidget, QLabel
 from PyQt6.QtCore import Qt
 
@@ -58,6 +60,17 @@ class MainWindow(QMainWindow):
             theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_SM, theme.SPACE_LG
         )
         forms_layout.setSpacing(theme.SPACE_MD)
+
+        # Bandeau de contexte : rappelle en permanence quel profil est en cours d'édition,
+        # information qui n'existait jusqu'ici que dans la sélection de l'arborescence.
+        self.lbl_context = QLabel()
+        self.lbl_context.setVisible(False)
+        self.lbl_context.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_TITLE}px; padding-bottom: ${SPACE_SM}px;"
+            "border-bottom: 1px solid $BORDER;"
+        ))
+        forms_layout.addWidget(self.lbl_context)
+
         self.tabs = QTabWidget()
         
         self.form_existing = ExistingProfileForm()
@@ -102,6 +115,22 @@ class MainWindow(QMainWindow):
         self.chk_overlay.setVisible(index == 1)
         self.update_plot()
 
+    def _update_context_bar(self, context):
+        """Affiche "<projet> › PK <nom>" au-dessus des onglets, ou masque le bandeau si
+        aucun profil n'est sélectionné. Les libellés viennent de la saisie utilisateur,
+        d'où l'échappement HTML avant de les injecter dans le texte enrichi du QLabel."""
+        if not context:
+            self.lbl_context.setVisible(False)
+            return
+
+        project_name, pk_name = (escape(part) for part in context)
+        self.lbl_context.setText(
+            f'<span style="color:{theme.TEXT_SECONDARY}">{project_name}</span>'
+            f'<span style="color:{theme.TEXT_MUTED}"> &rsaquo; </span>'
+            f'<span style="color:{theme.TEXT_PRIMARY}; font-weight:bold">PK {pk_name}</span>'
+        )
+        self.lbl_context.setVisible(True)
+
     def load_profile(self, profile_id: int):
         self.current_profile_id = profile_id
 
@@ -110,6 +139,7 @@ class MainWindow(QMainWindow):
         self.forms_stack.setCurrentIndex(1)
         self._work_splitter.setSizes([450, 700])
         self.plot_view.lbl_title.setText("Visualisation de la coupe transversale")
+        self._update_context_bar(self.sidebar.current_context())
 
         existing_data, project_data = self.db_manager.load_profile_state(profile_id)
 
@@ -127,6 +157,7 @@ class MainWindow(QMainWindow):
         disponible et il n'y a plus de poignée de scission à faire glisser pour le cacher."""
         self.current_profile_id = None
         self.forms_stack.hide()
+        self._update_context_bar(None)
         self.plot_view.lbl_title.setText("Profil en long du projet")
 
         rows = self.db_manager.get_longitudinal_data(project_id)
