@@ -125,7 +125,11 @@ class ProjectProfileForm(QWidget):
         form_berms.addRow("Pente Berge D (H/V):", self.inputs['bank_slope_right'])
         form_berms.addRow("Largeur Berge D (m):", self.inputs['bank_width_right'])
         layout.addWidget(grp_berms)
-        
+        # Sans ce stretch final, le QVBoxLayout distribue l'espace restant du QScrollArea
+        # en étirant chaque QGroupBox au lieu de le laisser vide en bas (cf. _setup_hydro_tab
+        # qui a le même stretch et n'a jamais eu ce problème).
+        layout.addStretch()
+
         scroll.setWidget(widget)
         self.stack.addWidget(scroll)
         
