@@ -1,21 +1,41 @@
 # ui/forms/existing_form.py
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, 
-                               QPushButton, QLabel, QHeaderView)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+                               QPushButton, QLabel, QHeaderView, QApplication)
 from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QKeySequence
+
+
+class _PasteableTableWidget(QTableWidget):
+    """QTableWidget qui délègue Ctrl+C / Ctrl+V au formulaire parent
+    (copier-coller depuis/vers Excel)."""
+
+    def __init__(self, rows, cols, form):
+        super().__init__(rows, cols)
+        self._form = form
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self._form.paste_from_clipboard()
+            return
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self._form.copy_selection_to_clipboard()
+            return
+        super().keyPressEvent(event)
+
 
 class ExistingProfileForm(QWidget):
     # Signal émis vers MainWindow quand les données changent (auto-save + maj graphique)
     data_changed = pyqtSignal(list)
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_layout = QVBoxLayout(self)
-        
+
         label = QLabel("<b>Profil en travers existant</b><br><i>Renseignez les points (X = distance, Z = altitude).</i>")
         self.main_layout.addWidget(label)
-        
+
         # Tableau de saisie
-        self.table = QTableWidget(0, 2)
+        self.table = _PasteableTableWidget(0, 2, self)
         self.table.setHorizontalHeaderLabels(["X (m)", "Z (m NGF)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.main_layout.addWidget(self.table)
@@ -81,3 +101,58 @@ class ExistingProfileForm(QWidget):
     def on_item_changed(self, item=None):
         if not self._is_loading:
             self.data_changed.emit(self.get_data())
+
+    def paste_from_clipboard(self):
+        """Colle une grille TSV/CSV Excel dans la table, à partir de la cellule active
+        (ou (0,0) si aucune sélection). Aucune validation ici : get_data() filtre déjà
+        les valeurs non numériques au moment de l'extraction."""
+        text = QApplication.clipboard().text()
+        if not text:
+            return
+
+        lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        while lines and lines[-1] == '':
+            lines.pop()
+        if not lines:
+            return
+        rows = [line.split('\t') for line in lines]
+
+        current = self.table.currentIndex()
+        start_row = current.row() if current.isValid() else 0
+        start_col = current.column() if current.isValid() else 0
+        n_cols = self.table.columnCount()
+
+        self._is_loading = True
+        try:
+            for i, row_values in enumerate(rows):
+                target_row = start_row + i
+                if target_row >= self.table.rowCount():
+                    self.table.insertRow(self.table.rowCount())
+                for j, value in enumerate(row_values):
+                    target_col = start_col + j
+                    if target_col >= n_cols:
+                        break
+                    self.table.setItem(target_row, target_col, QTableWidgetItem(value.strip()))
+        finally:
+            self._is_loading = False
+
+        self.on_item_changed()
+
+    def copy_selection_to_clipboard(self):
+        """Exporte la sélection rectangulaire courante en TSV brut (sans en-têtes)."""
+        selected = self.table.selectedIndexes()
+        if not selected:
+            return
+
+        rows = sorted(set(idx.row() for idx in selected))
+        cols = sorted(set(idx.column() for idx in selected))
+
+        lines = []
+        for r in rows:
+            cells = []
+            for c in cols:
+                item = self.table.item(r, c)
+                cells.append(item.text() if item else "")
+            lines.append('\t'.join(cells))
+
+        QApplication.clipboard().setText('\n'.join(lines))

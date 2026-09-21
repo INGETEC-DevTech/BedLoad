@@ -127,6 +127,19 @@ class DatabaseManager:
                 return existing_data, project_params
             return [], {}
 
+    def rename_profile(self, profile_id: int, new_pk_name: str) -> None:
+        """Renomme un profil (PK) existant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "UPDATE profiles SET pk_name = ? WHERE id = ?",
+                    (new_pk_name, profile_id)
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                raise ValueError(f"Le PK '{new_pk_name}' existe déjà dans ce projet.")
+
     def delete_project(self, project_id: int) -> None:
         """Supprime un projet et tous ses profils associés (grâce au CASCADE)."""
         with self._get_connection() as conn:
