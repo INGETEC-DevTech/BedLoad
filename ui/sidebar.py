@@ -1,4 +1,6 @@
 # ui/sidebar.py
+from html import escape
+
 from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
                              QInputDialog, QMessageBox, QMenu, QApplication, QStyle,
                              QStyledItemDelegate)
@@ -216,6 +218,7 @@ class Sidebar(QWidget):
         self.tree_view.setHeaderHidden(True)
         self.tree_view.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Retire le cadre pointillé au clic
         self.tree_view.setMouseTracking(True)  # nécessaire pour l'état "survol" du delegate
+        self.tree_view.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tree_view.setItemDelegate(_TreeItemDelegate(self.tree_view, self))
         # La flèche native d'expand/collapse est désactivée : le thème Windows peint un carré
         # gris plein derrière elle qu'aucune règle QSS ne parvient à neutraliser. Le delegate
@@ -393,18 +396,24 @@ class Sidebar(QWidget):
 
     def delete_item(self, data: dict, name: str):
         """Demande confirmation et supprime l'élément sélectionné."""
-        msg = f"Êtes-vous sûr de vouloir supprimer '{name}' ?"
-        
+        msg = f"Êtes-vous sûr de vouloir supprimer « {escape(name)} » ?"
+
         if data["type"] == "project":
-            msg += "\n\nATTENTION : Cela supprimera également tous les profils (PK) associés de la base de données."
-            
+            msg += (
+                f'<br><br><b style="color:{theme.DANGER}">Attention :</b> cela supprimera '
+                "également tous les profils (PK) associés de la base de données."
+            )
+
+        # La suppression est irréversible : le bouton par défaut reste "Non", pour qu'une
+        # validation réflexe (Entrée) n'efface pas un projet entier.
         reply = QMessageBox.question(
-            self, 
-            "Confirmation de suppression", 
-            msg, 
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            self,
+            "Confirmation de suppression",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
             if data["type"] == "project":
                 self.db.delete_project(data["id"])

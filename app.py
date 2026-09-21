@@ -78,13 +78,65 @@ QPushButton:disabled {
 }
 
 /* Champs de saisie — niveau 2 : la valeur saisie prime sur son libellé */
-QLineEdit, QTableWidget, QDoubleSpinBox {
+QLineEdit, QTableWidget {
     border: 1px solid $BORDER_INPUT;
     border-radius: 3px;
     padding: ${SPACE_XS}px ${SPACE_SM}px;
     background: $SURFACE;
     font-size: ${FONT_SIZE_VALUE}px;
     color: $TEXT_PRIMARY;
+}
+QLineEdit:focus, QTableWidget:focus {
+    border: 1px solid $BORDER_FOCUS;
+}
+QLineEdit:disabled, QTableWidget:disabled {
+    background-color: $SURFACE_ALT;
+    color: $TEXT_MUTED;
+}
+
+/* Le QDoubleSpinBox ne reçoit QUE sa typographie. Lui donner bordure, fond ou padding
+   fait basculer Qt en rendu par feuille de style, et il cesse alors de dessiner les
+   flèches de ses boutons (réduites à des traits, puis absentes si on style les boutons ;
+   les redessiner en QSS exigerait une image, le triangle en bordures du web n'ayant pas
+   d'équivalent ici). On laisse donc le style Fusion peindre le champ. */
+QDoubleSpinBox {
+    font-size: ${FONT_SIZE_VALUE}px;
+    color: $TEXT_PRIMARY;
+}
+QDoubleSpinBox:disabled {
+    color: $TEXT_MUTED;
+}
+
+/* Barres de défilement discrètes (le rendu natif jurait avec le reste) */
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: $BORDER_INPUT;
+    border-radius: 5px;
+    min-height: ${SPACE_XL}px;
+}
+QScrollBar::handle:horizontal {
+    background: $BORDER_INPUT;
+    border-radius: 5px;
+    min-width: ${SPACE_XL}px;
+}
+QScrollBar::handle:hover {
+    background: $BORDER_HOVER;
+}
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+}
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: transparent;
 }
 
 /* En-têtes de tableau : rôle de libellé, donc même niveau que les labels de champs */
@@ -96,13 +148,6 @@ QHeaderView::section {
     font-size: ${FONT_SIZE_BASE}px;
     font-weight: bold;
     color: $TEXT_SECONDARY;
-}
-QLineEdit:focus, QTableWidget:focus, QDoubleSpinBox:focus {
-    border: 1px solid $BORDER_FOCUS;
-}
-QLineEdit:disabled, QTableWidget:disabled, QDoubleSpinBox:disabled {
-    background-color: $SURFACE_ALT;
-    color: $TEXT_MUTED;
 }
 
 /* Cases à cocher */

@@ -18,7 +18,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HydroTopo - V2 (PyQt6)")
+        self.setWindowTitle("HydroTopo — Profils en travers")
         self.resize(1400, 800)
         self.db_manager = DatabaseManager()
         self.controller = ProfileController()
@@ -44,12 +44,27 @@ class MainWindow(QMainWindow):
         welcome_layout.setContentsMargins(
             theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG, theme.SPACE_LG
         )
-        lbl_welcome = QLabel("👈 Sélectionnez un projet ou un\nprofil dans l'arborescence")
+        # Les deux libellés doivent se lire comme un seul bloc centré verticalement :
+        # sans ces étirements, le layout les répartirait sur toute la hauteur.
+        welcome_layout.setSpacing(theme.SPACE_SM)
+        welcome_layout.addStretch()
+        lbl_welcome = QLabel("Aucun profil sélectionné")
         lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_welcome.setStyleSheet(theme.qss(
-            "color: $TEXT_MUTED; font-size: ${FONT_SIZE_VALUE}px; font-weight: bold;"
+            "color: $TEXT_SECONDARY; font-size: ${FONT_SIZE_TITLE}px; font-weight: bold;"
         ))
         welcome_layout.addWidget(lbl_welcome)
+
+        lbl_welcome_hint = QLabel(
+            "Choisissez un projet pour son profil en long,\n"
+            "ou un PK pour éditer son profil en travers."
+        )
+        lbl_welcome_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_welcome_hint.setStyleSheet(theme.qss(
+            "color: $TEXT_MUTED; font-size: ${FONT_SIZE_BASE}px;"
+        ))
+        welcome_layout.addWidget(lbl_welcome_hint)
+        welcome_layout.addStretch()
         self.forms_stack.addWidget(welcome_widget)
         
         # Index 1 : Les vrais formulaires

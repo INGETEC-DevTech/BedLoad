@@ -90,7 +90,7 @@ class ProjectProfileForm(QWidget):
         layout.setContentsMargins(0, 0, theme.SPACE_MD, theme.SPACE_SM)
         layout.setSpacing(theme.SPACE_SM)
 
-        grp_anchor = QGroupBox("Ancrage & Topographie")
+        grp_anchor = QGroupBox("Ancrage && Topographie")
         form_anchor = QFormLayout(grp_anchor)
         self.inputs['anchor_x'] = self._create_spinbox(-1000, 1000, 0.1)
         self.inputs['anchor_z'] = self._create_spinbox(-100, 1000, 0.01)
@@ -110,7 +110,7 @@ class ProjectProfileForm(QWidget):
         form_bed.addRow("Pente bords (H/V):", self.inputs['bed_side_slope'])
         layout.addWidget(grp_bed)
         
-        grp_berms = QGroupBox("Banquettes & Berges")
+        grp_berms = QGroupBox("Banquettes && Berges")
         form_berms = QFormLayout(grp_berms)
         self.inputs['berm_width_left'] = self._create_spinbox(0, 100, 0.1)
         self.inputs['berm_width_right'] = self._create_spinbox(0, 100, 0.1)
