@@ -94,10 +94,8 @@ class ProjectProfileForm(QWidget):
         form_anchor = QFormLayout(grp_anchor)
         self.inputs['anchor_x'] = self._create_spinbox(-1000, 1000, 0.1)
         self.inputs['anchor_z'] = self._create_spinbox(-100, 1000, 0.01)
-        self.inputs['slope'] = self._create_spinbox(0.0001, 1.0, 0.001, 4)
         form_anchor.addRow("X bord gauche fond (m):", self.inputs['anchor_x'])
         form_anchor.addRow("Z fond du lit (m NGF):", self.inputs['anchor_z'])
-        form_anchor.addRow("Pente long. (m/m):", self.inputs['slope'])
         layout.addWidget(grp_anchor)
         
         grp_bed = QGroupBox("Lit trapézoïdal")
@@ -155,10 +153,14 @@ class ProjectProfileForm(QWidget):
         
         self.inputs['h_eau'] = self._create_spinbox(0.01, 100, 0.05, 3, default_val=0.42)
         self.inputs['q_target'] = self._create_spinbox(0.1, 10000, 0.5, 2, default_val=15.0)
+        # Regroupé avec Ks : ce sont les deux seuls paramètres de la formule de
+        # Manning-Strickler, ce champ n'a rien à faire dans l'onglet Géométrie.
+        self.inputs['slope'] = self._create_spinbox(0.0001, 1.0, 0.001, 4)
         self.inputs['ks_pro'] = self._create_spinbox(10, 100, 1, 1, default_val=25.0)
-        
+
         form_hydro.addRow("Tirant d'eau h (m):", self.inputs['h_eau'])
         form_hydro.addRow("Débit Cible Q (m³/s):", self.inputs['q_target'])
+        form_hydro.addRow("Pente long. (m/m):", self.inputs['slope'])
         form_hydro.addRow("Strickler (Ks):", self.inputs['ks_pro'])
         layout.addWidget(grp_hydro)
         layout.addStretch()

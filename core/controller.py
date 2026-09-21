@@ -10,6 +10,7 @@ from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import compute_hydraulic_params, find_water_level_for_discharge
 from core.longitudinal import build_longitudinal_profile
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
+from ui import theme
 
 class ViewMode(Enum):
     EXISTING = "existing"
@@ -88,22 +89,42 @@ class ProfileController:
             
         # --- Incrustation des résultats ---
         if res["S"] > 0:
-            calc_h_tag = "[Calculé]" if mode == 'H_FROM_Q' else "[Saisi]"
-            calc_q_tag = "[Saisi]" if mode == 'H_FROM_Q' else "[Calculé]"
             h_relative = res["water_z"] - anchor_z
-            
-            texte_resultats = (
-                f"<b>Débit (Q) :</b> {res['Q']:.2f} m³/s <i>{calc_q_tag}</i><br>"
-                f"<b>Vitesse moyenne (V) :</b> {res['V']:.2f} m/s<br>"
-                f"<b>Surface mouillée (S) :</b> {res['S']:.2f} m²<br>"
-                f"<b>Tirant d'eau (h) :</b> {h_relative:.2f} m <i>{calc_h_tag}</i>"
+            is_h_calculated = mode == 'H_FROM_Q'
+
+            def highlighted_line(label: str, value_str: str) -> str:
+                # La grandeur calculée : toute la ligne en gras et en couleur d'accent,
+                # pour qu'on repère d'un coup d'œil LE résultat qui bouge avec la saisie.
+                return f'<span style="color:{theme.PRIMARY}"><b>{label} : {value_str} [Calculé]</b></span>'
+
+            def discreet_line(label: str, value_str: str, tag: Optional[str] = None) -> str:
+                line = f"<b>{label} :</b> {value_str}"
+                return f"{line} <i>[{tag}]</i>" if tag else line
+
+            q_line = (
+                discreet_line("Débit (Q)", f"{res['Q']:.2f} m³/s", "Saisi")
+                if is_h_calculated
+                else highlighted_line("Débit (Q)", f"{res['Q']:.2f} m³/s")
             )
-            
+            h_line = (
+                highlighted_line("Tirant d'eau (h)", f"{h_relative:.2f} m")
+                if is_h_calculated
+                else discreet_line("Tirant d'eau (h)", f"{h_relative:.2f} m", "Saisi")
+            )
+
+            v_line = discreet_line("Vitesse moyenne (V)", f"{res['V']:.2f} m/s")
+            s_line = discreet_line("Surface mouillée (S)", f"{res['S']:.2f} m²")
+
+            texte_resultats = (
+                f'<span style="color:{theme.TEXT_PRIMARY}"><b>Résultats hydrauliques</b></span><br><br>'
+                f"{q_line}<br>{v_line}<br>{s_line}<br>{h_line}"
+            )
+
             fig.add_annotation(
                 text=texte_resultats, align="left", showarrow=False,
-                xref="paper", yref="paper", x=0.02, y=0.96,
-                bgcolor="rgba(255, 255, 255, 0.9)", bordercolor="#ced4da",
-                borderwidth=1, borderpad=10, font=dict(size=12, color="#495057")
+                xref="paper", yref="paper", x=0.02, y=0.96, xanchor="left", yanchor="top",
+                bgcolor="rgba(255, 255, 255, 0.95)", bordercolor=theme.BORDER,
+                borderwidth=1, borderpad=14, font=dict(size=13, color=theme.TEXT_SECONDARY)
             )
             
         return fig
