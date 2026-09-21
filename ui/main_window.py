@@ -105,16 +105,30 @@ class MainWindow(QMainWindow):
 
         # 2b. Panneau du graphique (Toujours visible pour éviter le clignotement OpenGL)
         self.plot_view = PlotView()
+        # Largeur minimum : le graphique ne doit jamais devenir illisible si la fenêtre
+        # ou le panneau de gauche prennent trop de place.
+        self.plot_view.setMinimumWidth(500)
         work_splitter.addWidget(self.plot_view)
 
         self._work_splitter = work_splitter
 
-        # On impose la répartition de l'espace
+        # On impose la répartition de l'espace au démarrage
         main_splitter.setSizes([250, 1150])
         work_splitter.setSizes([450, 700])
 
+        # Quand la fenêtre est agrandie, tout l'espace en plus va au graphique : la sidebar
+        # et le panneau de formulaires gardent leur taille (stretch 0), seul le panneau de
+        # travail puis le graphique en son sein ont un stretch non nul. Sans ça, l'espace
+        # supplémentaire se répartissait proportionnellement partout, y compris sur des
+        # panneaux qui n'en ont pas besoin, laissant le graphique disproportionnellement
+        # à l'étroit sur un grand écran.
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+        work_splitter.setStretchFactor(0, 0)
+        work_splitter.setStretchFactor(1, 1)
+
         # Poignées non redimensionnables à la souris (juste visibles) : les proportions
-        # ci-dessus restent la seule base de calcul, y compris au redimensionnement fenêtre.
+        # ci-dessus restent la seule base de calcul pour un redimensionnement manuel.
         main_splitter.handle(1).setEnabled(False)
         work_splitter.handle(1).setEnabled(False)
 
