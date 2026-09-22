@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         existing_data, project_data = self.db_manager.load_profile_state(profile_id)
 
         self.form_existing.set_data(existing_data)
+        self.form_project.set_existing_points(existing_data)
         if not project_data:
             project_data = self.controller.default_project_params()
         self.form_project.set_data(project_data)
@@ -195,6 +196,7 @@ class MainWindow(QMainWindow):
     def save_and_update_plot(self, _=None):
         if self.current_profile_id is None: return
         existing_data = self.form_existing.get_data()
+        self.form_project.set_existing_points(existing_data)
         # Un seul blob project_params en base : les champs hydrauliques (slope, ks_pro,
         # calc_mode, q_target, h_eau, hydro_source, show_overlay) y sont fusionnés.
         project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
@@ -214,7 +216,12 @@ class MainWindow(QMainWindow):
         else:
             show_overlay = False
 
-        fig = self.controller.build_figure(
-            existing_data, project_data, mode, show_overlay=show_overlay
-        )
+        try:
+            fig = self.controller.build_figure(
+                existing_data, project_data, mode, show_overlay=show_overlay
+            )
+        except ValueError as e:
+            self.plot_view.update_plot(None, error_message=str(e))
+            return
+
         self.plot_view.update_plot(fig)

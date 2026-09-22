@@ -53,5 +53,30 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
     hdbg = Point(x=pdbg.x - p.bank_width_left, z=pdbg.z + p.bank_width_left / p.bank_slope_left)
     hdbd = Point(x=pdbd.x + p.bank_width_right, z=pdbd.z + p.bank_width_right / p.bank_slope_right)
 
+    # Raccord optionnel vers un point du profil existant, choisi manuellement (valeur
+    # figée à la sélection) : prolonge la géométrie au-delà du haut de berge actuel.
+    raccord_g = None
+    if p.connect_x_left is not None:
+        if not (p.connect_x_left < hdbg.x):
+            raise ValueError(
+                "Le point de raccord gauche est plus proche de l'axe du lit que le "
+                "haut de berge actuel — géométrie invalide."
+            )
+        raccord_g = Point(x=p.connect_x_left, z=p.connect_z_left)
+
+    raccord_d = None
+    if p.connect_x_right is not None:
+        if not (p.connect_x_right > hdbd.x):
+            raise ValueError(
+                "Le point de raccord droit est plus proche de l'axe du lit que le "
+                "haut de berge actuel — géométrie invalide."
+            )
+        raccord_d = Point(x=p.connect_x_right, z=p.connect_z_right)
+
     points = [hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd]
+    if raccord_g is not None:
+        points.insert(0, raccord_g)
+    if raccord_d is not None:
+        points.append(raccord_d)
+
     return CrossSection(name=name, points=points)

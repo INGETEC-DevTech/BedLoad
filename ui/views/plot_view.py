@@ -1,4 +1,5 @@
 # ui/views/plot_view.py
+import json
 import tempfile
 from pathlib import Path
 
@@ -123,14 +124,15 @@ class PlotView(QWidget):
         else:
             self.browser.page().runJavaScript("showEmptyState('👈 Sélectionnez un projet ou un profil pour commencer');")
 
-    def update_plot(self, fig):
+    def update_plot(self, fig, error_message: str = None):
         if not self._is_ready:
             self._pending_fig = fig
             return
-            
+
         if fig is None:
-            self.browser.page().runJavaScript("showEmptyState('Données insuffisantes pour tracer le profil.');")
+            message = error_message or 'Données insuffisantes pour tracer le profil.'
+            self.browser.page().runJavaScript(f"showEmptyState({json.dumps(message)});")
             return
-        
+
         fig_json = fig.to_json()
         self.browser.page().runJavaScript(f"updateGraph({fig_json});")

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import pandas as pd
 
 @dataclass
@@ -71,6 +71,14 @@ class ProjectParameters:
     h_eau: float = 0.42
     q_target: float = 15.0
     ks_pro: float = 25.0
+
+    # --- Raccords latéraux optionnels vers le profil existant ---
+    # Choisis manuellement (valeur figée à la sélection) : prolongent la géométrie
+    # au-delà du haut de berge actuel. None de chaque côté = comportement inchangé.
+    connect_x_left: Optional[float] = None
+    connect_z_left: Optional[float] = None
+    connect_x_right: Optional[float] = None
+    connect_z_right: Optional[float] = None
 
 
 def dataframe_to_points(df: pd.DataFrame) -> List[Point]:
