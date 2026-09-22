@@ -47,9 +47,9 @@ class ExistingProfileForm(QWidget):
         ))
         header_layout.addWidget(self.lbl_title)
 
-        self.lbl_hint = QLabel("Renseignez les points (X = distance, Z = altitude).")
+        self.lbl_hint = QLabel("Vous pouvez désormais copier-coller les valeurs des points.")
         self.lbl_hint.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
+            "font-size: ${FONT_SIZE_SM}px; color: red;"
         ))
         header_layout.addWidget(self.lbl_hint)
 

@@ -141,6 +141,47 @@ class DatabaseManager:
             except sqlite3.IntegrityError:
                 raise ValueError(f"Le PK '{new_pk_name}' existe déjà dans ce projet.")
 
+    def duplicate_profile(self, profile_id: int, new_pk_name: str) -> int:
+        """Duplique un profil (PK) dans le même projet, sous un nouveau nom."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT project_id FROM profiles WHERE id = ?", (profile_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"Le profil source (ID {profile_id}) est introuvable.")
+            project_id = row["project_id"]
+
+            cursor.execute(
+                "SELECT id FROM profiles WHERE project_id = ? AND pk_name = ?",
+                (project_id, new_pk_name)
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError(f"Le PK '{new_pk_name}' existe déjà dans ce projet.")
+
+        existing_data, project_params = self.load_profile_state(profile_id)
+        new_profile_id = self.create_or_get_profile(project_id, new_pk_name)
+        self.save_profile_state(new_profile_id, existing_data, project_params)
+        return new_profile_id
+
+    def duplicate_project(self, project_id: int, new_name: str) -> int:
+        """Duplique un projet et tous ses profils (PK) dans un nouveau projet."""
+        new_project_id = self.create_project(new_name)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, pk_name FROM profiles WHERE project_id = ?",
+                (project_id,)
+            )
+            profiles = [dict(row) for row in cursor.fetchall()]
+
+        for profile in profiles:
+            existing_data, project_params = self.load_profile_state(profile["id"])
+            new_profile_id = self.create_or_get_profile(new_project_id, profile["pk_name"])
+            self.save_profile_state(new_profile_id, existing_data, project_params)
+
+        return new_project_id
+
     def get_longitudinal_data(self, project_id: int) -> List[Tuple[float, float, float]]:
         """Pour le profil en long : un triplet (pk, altitude mini du TN existant, anchor_z du
         projet) par profil du projet, trié par PK numérique croissant. Les profils dont le nom

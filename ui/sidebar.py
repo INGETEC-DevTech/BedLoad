@@ -367,6 +367,7 @@ class Sidebar(QWidget):
         
         menu = QMenu()
         rename_action = menu.addAction("Renommer") if data["type"] == "profile" else None
+        duplicate_action = menu.addAction("Dupliquer")
         delete_action = menu.addAction("Supprimer")
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
@@ -374,6 +375,11 @@ class Sidebar(QWidget):
             self.delete_item(data, item.text())
         elif rename_action is not None and action == rename_action:
             self.rename_profile(data, item.text())
+        elif action == duplicate_action:
+            if data["type"] == "profile":
+                self.duplicate_profile(data, item.text())
+            else:
+                self.duplicate_project(data, item.text())
 
     def rename_profile(self, data: dict, current_name: str):
         """Demande un nouveau nom de PK (obligatoirement numérique) et renomme le profil."""
@@ -393,6 +399,57 @@ class Sidebar(QWidget):
             self.refresh_tree()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+
+    def duplicate_profile(self, data: dict, current_name: str):
+        """Demande un nouveau nom de PK (obligatoirement numérique) et duplique le profil
+        dans le même projet, avec ses données existantes."""
+        new_name, ok = QInputDialog.getText(self, "Dupliquer le profil", "Nom du PK :")
+        if not ok or not new_name:
+            return
+
+        new_name = new_name.strip()
+        try:
+            float(new_name.replace(',', '.'))
+        except ValueError:
+            QMessageBox.warning(self, "Erreur", "Le nom du PK doit être une valeur numérique (ex : 125.4).")
+            return
+
+        try:
+            new_profile_id = self.db.duplicate_profile(data["id"], new_name)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
+
+        self.refresh_tree()
+        self._select_profile(new_profile_id)
+
+    def duplicate_project(self, data: dict, current_name: str):
+        """Demande un nom pour le nouveau projet et duplique le projet source ainsi que
+        tous ses profils (PK)."""
+        new_name, ok = QInputDialog.getText(
+            self, "Dupliquer le projet", "Nom du projet :", text=f"{current_name} - copie"
+        )
+        if not ok or not new_name:
+            return
+
+        try:
+            self.db.duplicate_project(data["id"], new_name)
+            self.refresh_tree()
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+
+    def _select_profile(self, profile_id: int):
+        """Sélectionne dans l'arbre le profil dont l'ID est donné (typiquement juste après
+        un refresh_tree(), pour mettre en avant un profil nouvellement créé)."""
+        for row in range(self.model.rowCount()):
+            proj_item = self.model.item(row)
+            for prof_row in range(proj_item.rowCount()):
+                prof_item = proj_item.child(prof_row)
+                if prof_item.data(Qt.ItemDataRole.UserRole)["id"] == profile_id:
+                    index = self.model.indexFromItem(prof_item)
+                    self.tree_view.setCurrentIndex(index)
+                    self.on_item_clicked(index)
+                    return
 
     def delete_item(self, data: dict, name: str):
         """Demande confirmation et supprime l'élément sélectionné."""
