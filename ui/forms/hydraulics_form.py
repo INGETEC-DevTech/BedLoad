@@ -1,5 +1,5 @@
 # ui/forms/hydraulics_form.py
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QGroupBox, QScrollArea,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QScrollArea,
                                 QRadioButton, QCheckBox, QDoubleSpinBox)
 from PyQt6.QtCore import pyqtSignal
 
@@ -75,7 +75,11 @@ class HydraulicsForm(QWidget):
         # --- Superposition de l'autre profil ---
         self.chk_overlay = QCheckBox()
         self.chk_overlay.stateChanged.connect(self.on_value_changed)
-        layout.addWidget(self.chk_overlay)
+        row_overlay = QHBoxLayout()
+        row_overlay.setContentsMargins(theme.SPACE_SM, 0, 0, 0)
+        row_overlay.addWidget(self.chk_overlay)
+        row_overlay.addStretch()
+        layout.addLayout(row_overlay)
 
         layout.addStretch()
 

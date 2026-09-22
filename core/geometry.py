@@ -44,9 +44,10 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
     banq1 = Point(x=fdlg.x - p.bed_side_slope * p.bed_depth, z=fdlg.z + p.bed_depth)
     banq2 = Point(x=fdld.x + p.bed_side_slope * p.bed_depth, z=fdld.z + p.bed_depth)
 
-    # Banquettes (largeur horizontale, altitude constante).
-    pdbg = Point(x=banq1.x - p.berm_width_left, z=banq1.z)
-    pdbd = Point(x=banq2.x + p.berm_width_right, z=banq2.z)
+    # Banquettes (largeur horizontale, pente berm_slope montante vers l'extérieur ;
+    # 0 = plat, comportement historique).
+    pdbg = Point(x=banq1.x - p.berm_width_left, z=banq1.z + p.berm_width_left * p.berm_slope_left)
+    pdbd = Point(x=banq2.x + p.berm_width_right, z=banq2.z + p.berm_width_right * p.berm_slope_right)
 
     # Berges (largeur horizontale bank_width, pente bank_slope -> montée
     # verticale = bank_width / bank_slope).

@@ -31,6 +31,8 @@ class ProjectParameters:
     # --- Banquettes ---
     berm_width_left: float = 0.001
     berm_width_right: float = 0.8
+    berm_slope_left: float = 0.0
+    berm_slope_right: float = 0.0
 
     # --- Berges ---
     bank_slope_left: float = 1.8

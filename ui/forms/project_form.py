@@ -33,10 +33,6 @@ class ProjectProfileForm(QWidget):
 
         self._setup_geo_tab()
 
-        self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
-        self.chk_overlay.stateChanged.connect(self.on_value_changed)
-        self.main_layout.addWidget(self.chk_overlay)
-
     def _create_spinbox(self, min_val, max_val, step, decimals=2, default_val=None):
         sb = QDoubleSpinBox()
         sb.setRange(min_val, max_val)
@@ -106,8 +102,12 @@ class ProjectProfileForm(QWidget):
         form_banquettes = QFormLayout()
         self.inputs['berm_width_left'] = self._create_spinbox(0, 100, 0.1)
         self.inputs['berm_width_right'] = self._create_spinbox(0, 100, 0.1)
+        self.inputs['berm_slope_left'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
+        self.inputs['berm_slope_right'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
         form_banquettes.addRow("Banquette RG (m):", self.inputs['berm_width_left'])
         form_banquettes.addRow("Banquette RD (m):", self.inputs['berm_width_right'])
+        form_banquettes.addRow("Pente Banquette G (m/m):", self.inputs['berm_slope_left'])
+        form_banquettes.addRow("Pente Banquette D (m/m):", self.inputs['berm_slope_right'])
         layout_berms.addLayout(form_banquettes)
 
         lbl_berges = QLabel("Berges")
@@ -180,6 +180,14 @@ class ProjectProfileForm(QWidget):
         layout_connect.addWidget(self.lbl_connect_confirm_right)
 
         layout.addWidget(grp_connect)
+
+        self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
+        self.chk_overlay.stateChanged.connect(self.on_value_changed)
+        row_overlay = QHBoxLayout()
+        row_overlay.setContentsMargins(theme.SPACE_SM, 0, 0, 0)
+        row_overlay.addWidget(self.chk_overlay)
+        row_overlay.addStretch()
+        layout.addLayout(row_overlay)
 
         # Sans ce stretch final, le QVBoxLayout distribue l'espace restant du QScrollArea
         # en étirant chaque QGroupBox au lieu de le laisser vide en bas.
