@@ -198,6 +198,6 @@ if __name__ == "__main__":
     app.setStyleSheet(QSS_THEME)
     
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     
     sys.exit(app.exec())

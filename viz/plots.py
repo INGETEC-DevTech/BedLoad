@@ -22,6 +22,7 @@ def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
         yaxis_title=dict(text="Altitude (m NGF)", font=dict(size=12, color="#6c757d")),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff", # Se fond parfaitement avec les onglets blancs
+        autosize=True,
         margin=dict(l=50, r=20, t=60, b=50),
         legend=dict(
             orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,

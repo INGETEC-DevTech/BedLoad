@@ -15,13 +15,14 @@ def setup_logger():
     log_file = get_base_dir() / "hydrotopo.log"
     
     # Configuration pour écrire dans le fichier avec un format clair
+    handlers = [logging.FileHandler(log_file, encoding='utf-8')]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout) # Garde l'affichage dans ton terminal
-        ]
+        handlers=handlers
     )
 

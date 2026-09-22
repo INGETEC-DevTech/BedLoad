@@ -86,6 +86,7 @@ class PlotView(QWidget):
                         Plotly.react(graphDiv, figData.data, figData.layout, config);
                         document.getElementById('graph').style.display = 'block';
                         document.getElementById('empty-state').style.display = 'none';
+                        Plotly.Plots.resize(graphDiv);
                     }} catch(err) {{
                         showEmptyState("Erreur d'affichage : " + err.message);
                     }}
@@ -95,6 +96,11 @@ class PlotView(QWidget):
                     document.getElementById('empty-state-text').innerHTML = msg || 'Données insuffisantes pour tracer le profil.';
                     document.getElementById('empty-state').style.display = 'flex';
                 }}
+                // Le QWebEngineView change de taille avec la fenêtre principale et les
+                // splitters ; Plotly ne le détecte pas seul, d'où ce ResizeObserver.
+                new ResizeObserver(function() {{
+                    Plotly.Plots.resize(document.getElementById('graph'));
+                }}).observe(document.getElementById('card'));
             </script>
         </body>
         </html>

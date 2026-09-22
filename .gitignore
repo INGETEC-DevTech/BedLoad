@@ -20,3 +20,9 @@ Thumbs.db
 
 # Fichiers de log
 *.log
+
+# Compilation PyInstaller 
+venv_build
+build/
+dist/
+*.spec
