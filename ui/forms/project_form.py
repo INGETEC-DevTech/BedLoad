@@ -1,8 +1,8 @@
 # ui/forms/project_form.py
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox,
                                 QGroupBox, QScrollArea, QCheckBox, QPushButton,
-                                QLabel, QInputDialog, QMessageBox)
-from PyQt6.QtCore import pyqtSignal
+                                QLabel, QInputDialog, QMessageBox, QFrame, QSizePolicy)
+from PyQt6.QtCore import pyqtSignal, Qt
 
 from ui import theme
 
@@ -51,6 +51,10 @@ class ProjectProfileForm(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea { border: none; }") # Évite une double bordure
+        # Aucun contenu de cet onglet ne doit jamais déclencher de défilement horizontal,
+        # même par accident à l'avenir (cf. les boutons de raccord, qui se partagent
+        # désormais la largeur disponible au lieu de la dépasser).
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         widget = QWidget()
         layout = QVBoxLayout(widget)
         # Marge droite plus large : elle réserve la place de la barre de défilement.
@@ -79,41 +83,6 @@ class ProjectProfileForm(QWidget):
         self.lbl_anchor_confirm.setVisible(False)
         layout_anchor.addWidget(self.lbl_anchor_confirm)
 
-        # --- Raccords latéraux optionnels vers le profil existant ---
-        self.btn_pick_connect_left = QPushButton("Choisir le point de raccord gauche")
-        self.btn_pick_connect_left.clicked.connect(lambda: self._pick_connect_point('left'))
-        layout_anchor.addWidget(self.btn_pick_connect_left)
-
-        self.btn_remove_connect_left = QPushButton("Retirer le raccord")
-        self.btn_remove_connect_left.clicked.connect(lambda: self._remove_connect_point('left'))
-        self.btn_remove_connect_left.setVisible(False)
-        layout_anchor.addWidget(self.btn_remove_connect_left)
-
-        self.lbl_connect_confirm_left = QLabel()
-        self.lbl_connect_confirm_left.setWordWrap(True)
-        self.lbl_connect_confirm_left.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
-        ))
-        self.lbl_connect_confirm_left.setVisible(False)
-        layout_anchor.addWidget(self.lbl_connect_confirm_left)
-
-        self.btn_pick_connect_right = QPushButton("Choisir le point de raccord droit")
-        self.btn_pick_connect_right.clicked.connect(lambda: self._pick_connect_point('right'))
-        layout_anchor.addWidget(self.btn_pick_connect_right)
-
-        self.btn_remove_connect_right = QPushButton("Retirer le raccord")
-        self.btn_remove_connect_right.clicked.connect(lambda: self._remove_connect_point('right'))
-        self.btn_remove_connect_right.setVisible(False)
-        layout_anchor.addWidget(self.btn_remove_connect_right)
-
-        self.lbl_connect_confirm_right = QLabel()
-        self.lbl_connect_confirm_right.setWordWrap(True)
-        self.lbl_connect_confirm_right.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
-        ))
-        self.lbl_connect_confirm_right.setVisible(False)
-        layout_anchor.addWidget(self.lbl_connect_confirm_right)
-
         layout.addWidget(grp_anchor)
 
         grp_bed = QGroupBox("Lit trapézoïdal")
@@ -126,21 +95,92 @@ class ProjectProfileForm(QWidget):
         form_bed.addRow("Pente bords (H/V):", self.inputs['bed_side_slope'])
         layout.addWidget(grp_bed)
 
+        # Un seul QGroupBox pour "Banquettes && Berges" (pas deux, pour ne pas alourdir
+        # le bloc), mais deux sous-parties visuellement distinguées par un séparateur
+        # fin : les largeurs de banquette et les pentes de berge n'ont pas de rapport
+        # direct entre elles, malgré leur regroupement historique dans un même cadre.
         grp_berms = QGroupBox("Banquettes && Berges")
-        form_berms = QFormLayout(grp_berms)
+        layout_berms = QVBoxLayout(grp_berms)
+        layout_berms.setSpacing(theme.SPACE_SM)
+
+        form_banquettes = QFormLayout()
         self.inputs['berm_width_left'] = self._create_spinbox(0, 100, 0.1)
         self.inputs['berm_width_right'] = self._create_spinbox(0, 100, 0.1)
+        form_banquettes.addRow("Banquette RG (m):", self.inputs['berm_width_left'])
+        form_banquettes.addRow("Banquette RD (m):", self.inputs['berm_width_right'])
+        layout_berms.addLayout(form_banquettes)
+
+        lbl_berges = QLabel("Berges")
+        lbl_berges.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_SM}px; font-weight: bold; color: $TEXT_SECONDARY;"
+        ))
+        layout_berms.addWidget(lbl_berges)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet(theme.qss("QFrame { color: $BORDER; }"))
+        layout_berms.addWidget(separator)
+
+        form_berges = QFormLayout()
         self.inputs['bank_slope_left'] = self._create_spinbox(0.01, 100, 0.1)
         self.inputs['bank_width_left'] = self._create_spinbox(0, 100, 0.1)
         self.inputs['bank_slope_right'] = self._create_spinbox(0.01, 100, 0.1)
         self.inputs['bank_width_right'] = self._create_spinbox(0, 100, 0.1)
-        form_berms.addRow("Banquette RG (m):", self.inputs['berm_width_left'])
-        form_berms.addRow("Banquette RD (m):", self.inputs['berm_width_right'])
-        form_berms.addRow("Pente Berge G (H/V):", self.inputs['bank_slope_left'])
-        form_berms.addRow("Largeur Berge G (m):", self.inputs['bank_width_left'])
-        form_berms.addRow("Pente Berge D (H/V):", self.inputs['bank_slope_right'])
-        form_berms.addRow("Largeur Berge D (m):", self.inputs['bank_width_right'])
+        form_berges.addRow("Pente Berge G (H/V):", self.inputs['bank_slope_left'])
+        form_berges.addRow("Largeur Berge G (m):", self.inputs['bank_width_left'])
+        form_berges.addRow("Pente Berge D (H/V):", self.inputs['bank_slope_right'])
+        form_berges.addRow("Largeur Berge D (m):", self.inputs['bank_width_right'])
+        layout_berms.addLayout(form_berges)
+
         layout.addWidget(grp_berms)
+
+        # --- Raccord au terrain naturel (optionnel, de chaque côté) ---
+        grp_connect = QGroupBox("Raccord au terrain naturel")
+        layout_connect = QVBoxLayout(grp_connect)
+        layout_connect.setSpacing(theme.SPACE_SM)
+
+        row_pick = QHBoxLayout()
+        self.btn_pick_connect_left = QPushButton("Raccord gauche")
+        self.btn_pick_connect_left.clicked.connect(lambda: self._pick_connect_point('left'))
+        self.btn_pick_connect_left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row_pick.addWidget(self.btn_pick_connect_left, stretch=1)
+
+        self.btn_pick_connect_right = QPushButton("Raccord droit")
+        self.btn_pick_connect_right.clicked.connect(lambda: self._pick_connect_point('right'))
+        self.btn_pick_connect_right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row_pick.addWidget(self.btn_pick_connect_right, stretch=1)
+        layout_connect.addLayout(row_pick)
+
+        row_remove = QHBoxLayout()
+        self.btn_remove_connect_left = QPushButton("Retirer le raccord")
+        self.btn_remove_connect_left.clicked.connect(lambda: self._remove_connect_point('left'))
+        self.btn_remove_connect_left.setVisible(False)
+        row_remove.addWidget(self.btn_remove_connect_left)
+
+        self.btn_remove_connect_right = QPushButton("Retirer le raccord")
+        self.btn_remove_connect_right.clicked.connect(lambda: self._remove_connect_point('right'))
+        self.btn_remove_connect_right.setVisible(False)
+        row_remove.addWidget(self.btn_remove_connect_right)
+        layout_connect.addLayout(row_remove)
+
+        self.lbl_connect_confirm_left = QLabel()
+        self.lbl_connect_confirm_left.setWordWrap(True)
+        self.lbl_connect_confirm_left.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
+        ))
+        self.lbl_connect_confirm_left.setVisible(False)
+        layout_connect.addWidget(self.lbl_connect_confirm_left)
+
+        self.lbl_connect_confirm_right = QLabel()
+        self.lbl_connect_confirm_right.setWordWrap(True)
+        self.lbl_connect_confirm_right.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
+        ))
+        self.lbl_connect_confirm_right.setVisible(False)
+        layout_connect.addWidget(self.lbl_connect_confirm_right)
+
+        layout.addWidget(grp_connect)
+
         # Sans ce stretch final, le QVBoxLayout distribue l'espace restant du QScrollArea
         # en étirant chaque QGroupBox au lieu de le laisser vide en bas.
         layout.addStretch()
