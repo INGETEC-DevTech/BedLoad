@@ -1,20 +1,21 @@
 # ui/main_window.py
 from html import escape
 
-from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QCheckBox, QStackedWidget, QLabel
+from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QStackedWidget, QLabel
 from PyQt6.QtCore import Qt
 
 from database.db_manager import DatabaseManager
 from ui.sidebar import Sidebar
 from ui.forms.existing_form import ExistingProfileForm
 from ui.forms.project_form import ProjectProfileForm
+from ui.forms.hydraulics_form import HydraulicsForm
 from ui.views.plot_view import PlotView
 from ui import theme
 
 from core.controller import ProfileController, ViewMode
 
 class MainWindow(QMainWindow):
-    TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT]
+    TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT, ViewMode.HYDRAULICS]
 
     def __init__(self):
         super().__init__()
@@ -90,15 +91,13 @@ class MainWindow(QMainWindow):
         
         self.form_existing = ExistingProfileForm()
         self.form_project = ProjectProfileForm()
-        
+        self.form_hydraulics = HydraulicsForm()
+
         self.tabs.addTab(self.form_existing, "Profil existant")
         self.tabs.addTab(self.form_project, "Profil projet")
+        self.tabs.addTab(self.form_hydraulics, "Hydraulique")
         forms_layout.addWidget(self.tabs)
-        
-        self.chk_overlay = QCheckBox("Afficher le profil existant en fond (vert)")
-        self.chk_overlay.setVisible(False)
-        forms_layout.addWidget(self.chk_overlay)
-        
+
         self.forms_stack.addWidget(forms_widget)
 
         work_splitter.addWidget(self.forms_stack)
@@ -137,11 +136,10 @@ class MainWindow(QMainWindow):
         self.sidebar.project_selected.connect(self.load_project_longitudinal)
         self.form_existing.data_changed.connect(self.save_and_update_plot)
         self.form_project.data_changed.connect(self.save_and_update_plot)
-        self.chk_overlay.stateChanged.connect(self.update_plot)
+        self.form_hydraulics.data_changed.connect(self.save_and_update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
     def on_tab_changed(self, index: int):
-        self.chk_overlay.setVisible(index == 1)
         self.update_plot()
 
     def _update_context_bar(self, context):
@@ -176,6 +174,7 @@ class MainWindow(QMainWindow):
         if not project_data:
             project_data = self.controller.default_project_params()
         self.form_project.set_data(project_data)
+        self.form_hydraulics.set_data(project_data)
 
         self.update_plot()
 
@@ -196,16 +195,26 @@ class MainWindow(QMainWindow):
     def save_and_update_plot(self, _=None):
         if self.current_profile_id is None: return
         existing_data = self.form_existing.get_data()
-        project_data = self.form_project.get_data()
+        # Un seul blob project_params en base : les champs hydrauliques (slope, ks_pro,
+        # calc_mode, q_target, h_eau, hydro_source, show_overlay) y sont fusionnés.
+        project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
         self.db_manager.save_profile_state(self.current_profile_id, existing_data, project_data)
         self.update_plot()
 
     def update_plot(self, _=None):
         if self.current_profile_id is None: return
         existing_data = self.form_existing.get_data()
-        project_data = self.form_project.get_data()
+        project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
         mode = self.TAB_MODES[self.tabs.currentIndex()]
+
+        if mode is ViewMode.PROJECT:
+            show_overlay = self.form_project.get_data()['show_overlay']
+        elif mode is ViewMode.HYDRAULICS:
+            show_overlay = self.form_hydraulics.get_data()['show_overlay']
+        else:
+            show_overlay = False
+
         fig = self.controller.build_figure(
-            existing_data, project_data, mode, show_overlay=self.chk_overlay.isChecked()
+            existing_data, project_data, mode, show_overlay=show_overlay
         )
         self.plot_view.update_plot(fig)

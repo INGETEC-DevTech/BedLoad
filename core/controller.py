@@ -15,6 +15,7 @@ from ui import theme
 class ViewMode(Enum):
     EXISTING = "existing"
     PROJECT = "project"
+    HYDRAULICS = "hydraulics"
 
 class ProfileController:
     MIN_POINTS_FOR_PLOT = 2
@@ -26,9 +27,11 @@ class ProfileController:
         mode: ViewMode,
         show_overlay: bool = False,
     ) -> Optional[go.Figure]:
-        
+
         if mode is ViewMode.EXISTING:
             return self._build_existing_figure(existing_data)
+        if mode is ViewMode.HYDRAULICS:
+            return self._build_hydraulics_figure(existing_data, project_data, project_data, show_overlay)
         return self._build_project_figure(existing_data, project_data, show_overlay)
 
     @staticmethod
@@ -57,40 +60,78 @@ class ProfileController:
         project_data: Dict[str, Any],
         show_overlay: bool,
     ) -> go.Figure:
-        
+        """Éditeur de géométrie pure : aucun calcul hydraulique ni annotation de résultats
+        (ceux-ci vivent désormais dans l'onglet Hydraulique, cf. _build_hydraulics_figure)."""
+
         params = self._to_project_parameters(project_data)
         section_proj = build_project_cross_section(params, name="Projet")
-        
-        # --- Moteur Hydraulique ---
-        mode = project_data.get('calc_mode', 'Q_FROM_H')
-        slope = getattr(params, 'slope', 0.005)
-        ks = getattr(params, 'ks_pro', 25.0)
-        anchor_z = getattr(params, 'anchor_z', 0.0)
-        
-        if mode == 'H_FROM_Q':
-            q_target = project_data.get('q_target', 15.0)
-            res = find_water_level_for_discharge(section_proj, q_target, slope, ks)
+
+        if show_overlay:
+            section_ext = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
+            return plot_overlay(section_ext, section_proj)
+        return plot_single_profile(section_proj, color=PROJECT_COLOR)
+
+    def _build_hydraulics_figure(
+        self,
+        existing_data: List[Dict[str, Any]],
+        project_data: Dict[str, Any],
+        hydro_data: Dict[str, Any],
+        show_overlay: bool,
+    ) -> Optional[go.Figure]:
+        hydro_source = hydro_data.get('hydro_source', 'project')
+
+        if hydro_source == 'existing':
+            section = self._to_cross_section(existing_data, name="Existant")
+            if section is None:
+                return None
+            z_ref = min(pt.z for pt in section.points)
+            color = EXISTING_COLOR
         else:
-            h_eau = project_data.get('h_eau', 0.5)
-            res = compute_hydraulic_params(section_proj, anchor_z + h_eau, slope, ks)
+            params = self._to_project_parameters(project_data)
+            section = build_project_cross_section(params, name="Projet")
+            z_ref = params.anchor_z
+            color = PROJECT_COLOR
+
+        # --- Moteur Hydraulique ---
+        calc_mode = hydro_data.get('calc_mode', 'Q_FROM_H')
+        slope = hydro_data.get('slope', 0.005)
+        ks = hydro_data.get('ks_pro', 25.0)
+
+        if calc_mode == 'H_FROM_Q':
+            q_target = hydro_data.get('q_target', 15.0)
+            res = find_water_level_for_discharge(section, q_target, slope, ks)
+        else:
+            h_eau = hydro_data.get('h_eau', 0.5)
+            res = compute_hydraulic_params(section, z_ref + h_eau, slope, ks)
 
         # --- Génération de la figure ---
         if show_overlay:
-            section_ext = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
-            fig = plot_overlay(
-                section_ext, section_proj,
-                water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
-            )
+            # L'AUTRE profil (existant si la source est le projet, et vice-versa) est
+            # superposé en fond. plot_overlay colore son 1er argument en "existant" (vert)
+            # et son 2e en "projet" (violet), quel que soit le rôle qu'il joue ici.
+            if hydro_source == 'existing':
+                other_params = self._to_project_parameters(project_data)
+                other_section = build_project_cross_section(other_params, name="Projet")
+                fig = plot_overlay(
+                    section, other_section,
+                    water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
+                )
+            else:
+                other_section = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
+                fig = plot_overlay(
+                    other_section, section,
+                    water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
+                )
         else:
             fig = plot_single_profile(
-                section_proj, color=PROJECT_COLOR,
+                section, color=color,
                 water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
             )
-            
+
         # --- Incrustation des résultats ---
         if res["S"] > 0:
-            h_relative = res["water_z"] - anchor_z
-            is_h_calculated = mode == 'H_FROM_Q'
+            h_relative = res["water_z"] - z_ref
+            is_h_calculated = calc_mode == 'H_FROM_Q'
 
             def highlighted_line(label: str, value_str: str) -> str:
                 # La grandeur calculée : toute la ligne en gras et en couleur d'accent,
@@ -126,7 +167,7 @@ class ProfileController:
                 bgcolor="rgba(255, 255, 255, 0.95)", bordercolor=theme.BORDER,
                 borderwidth=1, borderpad=14, font=dict(size=13, color=theme.TEXT_SECONDARY)
             )
-            
+
         return fig
 
     def _to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:
