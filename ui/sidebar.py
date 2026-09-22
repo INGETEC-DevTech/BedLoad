@@ -366,7 +366,7 @@ class Sidebar(QWidget):
         data = item.data(Qt.ItemDataRole.UserRole)
         
         menu = QMenu()
-        rename_action = menu.addAction("Renommer") if data["type"] == "profile" else None
+        rename_action = menu.addAction("Renommer") if data["type"] in ("profile", "project") else None
         duplicate_action = menu.addAction("Dupliquer")
         delete_action = menu.addAction("Supprimer")
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
@@ -374,7 +374,10 @@ class Sidebar(QWidget):
         if action == delete_action:
             self.delete_item(data, item.text())
         elif rename_action is not None and action == rename_action:
-            self.rename_profile(data, item.text())
+            if data["type"] == "profile":
+                self.rename_profile(data, item.text())
+            else:
+                self.rename_project_item(data, item.text())
         elif action == duplicate_action:
             if data["type"] == "profile":
                 self.duplicate_profile(data, item.text())
@@ -396,6 +399,22 @@ class Sidebar(QWidget):
 
         try:
             self.db.rename_profile(data["id"], new_name)
+            self.refresh_tree()
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+
+    def rename_project_item(self, data: dict, current_name: str):
+        """Demande un nouveau nom de projet (texte libre) et renomme le projet."""
+        new_name, ok = QInputDialog.getText(self, "Renommer le projet", "Nom du projet :", text=current_name)
+        if not ok:
+            return
+
+        new_name = new_name.strip()
+        if not new_name:
+            return
+
+        try:
+            self.db.rename_project(data["id"], new_name)
             self.refresh_tree()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))

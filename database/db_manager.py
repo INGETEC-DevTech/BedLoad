@@ -78,6 +78,19 @@ class DatabaseManager:
             except sqlite3.IntegrityError:
                 raise ValueError(f"Le projet '{name}' existe déjà.")
 
+    def rename_project(self, project_id: int, new_name: str) -> None:
+        """Renomme un projet existant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "UPDATE projects SET name = ? WHERE id = ?",
+                    (new_name, project_id)
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                raise ValueError(f"Le projet '{new_name}' existe déjà.")
+
     # --- GESTION DES PROFILS ET AUTO-SAVE ---
 
     def create_or_get_profile(self, project_id: int, pk_name: str) -> int:

@@ -1,7 +1,7 @@
 # ui/forms/existing_form.py
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-                               QPushButton, QLabel, QHeaderView, QApplication)
-from PyQt6.QtCore import pyqtSignal
+                               QPushButton, QLabel, QHeaderView, QApplication, QMenu)
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QKeySequence
 
 from ui import theme
@@ -21,6 +21,9 @@ class _PasteableTableWidget(QTableWidget):
             return
         if event.matches(QKeySequence.StandardKey.Copy):
             self._form.copy_selection_to_clipboard()
+            return
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._form.delete_selected_rows()
             return
         super().keyPressEvent(event)
 
@@ -67,7 +70,10 @@ class ExistingProfileForm(QWidget):
         # Connexions
         self.btn_add_row.clicked.connect(self.add_row)
         self.table.itemChanged.connect(self.on_item_changed)
-        
+
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.open_table_context_menu)
+
         # Verrou pour éviter les signaux multiples lors du chargement initial
         self._is_loading = False
         
@@ -122,6 +128,33 @@ class ExistingProfileForm(QWidget):
     def on_item_changed(self, item=None):
         if not self._is_loading:
             self.data_changed.emit(self.get_data())
+
+    def delete_selected_rows(self):
+        """Supprime les lignes couvertes par la sélection courante (une ou plusieurs
+        cellules). Ordre décroissant pour ne pas décaler les index pendant la boucle."""
+        rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()), reverse=True)
+        if not rows:
+            return
+
+        self._is_loading = True
+        for row in rows:
+            self.table.removeRow(row)
+        self._is_loading = False
+
+        self.on_item_changed()
+
+    def open_table_context_menu(self, position):
+        """Menu contextuel clic droit sur le tableau : suppression des lignes sélectionnées."""
+        n_rows = len(set(idx.row() for idx in self.table.selectedIndexes()))
+        label = "Supprimer les lignes sélectionnées" if n_rows > 1 else "Supprimer la ligne sélectionnée"
+
+        menu = QMenu(self.table)
+        delete_action = menu.addAction(label)
+        delete_action.setEnabled(n_rows > 0)
+
+        action = menu.exec(self.table.viewport().mapToGlobal(position))
+        if action == delete_action:
+            self.delete_selected_rows()
 
     def paste_from_clipboard(self):
         """Colle une grille TSV/CSV Excel dans la table, à partir de la cellule active
