@@ -122,7 +122,7 @@ class PlotView(QWidget):
             self.update_plot(self._pending_fig)
             self._pending_fig = None
         else:
-            self.browser.page().runJavaScript("showEmptyState('👈 Sélectionnez un projet ou un profil pour commencer');")
+            self.browser.page().runJavaScript("showEmptyState('👈 Sélectionnez un scénario ou un profil pour commencer');")
 
     def update_plot(self, fig, error_message: str = None):
         if not self._is_ready:

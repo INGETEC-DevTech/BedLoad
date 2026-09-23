@@ -42,7 +42,7 @@ class ProfileController:
         self, rows: List[Tuple[float, Optional[float], Optional[float]]],
         hard_points: Optional[Dict[str, Dict[str, Optional[float]]]] = None,
     ) -> Optional[go.Figure]:
-        """Construit le profil en long d'un projet à partir des triplets
+        """Construit le profil en long d'un scénario à partir des triplets
         (pk, min_z_existant, anchor_z_projet) renvoyés par DatabaseManager.get_longitudinal_data,
         et des points durs amont/aval (format DatabaseManager.get_hard_points)."""
         profile = build_longitudinal_profile(rows, hard_points)

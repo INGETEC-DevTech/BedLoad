@@ -17,13 +17,34 @@ from core.controller import ProfileController, ViewMode
 class MainWindow(QMainWindow):
     TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT, ViewMode.HYDRAULICS]
 
+    # Textes (titre, aide) de la page d'accueil, selon ce qui est sélectionné.
+    WELCOME_DEFAULT = (
+        "Aucun profil sélectionné",
+        "Choisissez un scénario pour son profil en long,\n"
+        "ou un profil pour éditer son profil en travers.",
+    )
+    WELCOME_PROJECT = (
+        "Aucun profil sélectionné",
+        "Choisissez un scénario de ce projet pour son profil en long,\n"
+        "ou l'un de ses profils pour éditer son profil en travers.",
+    )
+    WELCOME_DRAFT_ZONE = (
+        "Zone Draft",
+        "Brouillons de test, sans lien avec les projets.\n"
+        "Choisissez un brouillon, ou créez-en un avec « + Nouveau Profil ».",
+    )
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HydroTopo — Profils en travers")
         self.resize(1400, 800)
         self.db_manager = DatabaseManager()
         self.controller = ProfileController()
-        self.current_profile_id = None
+        # Élément ouvert dans le formulaire : ("profile", id) pour un profil de scénario,
+        # ("draft", id) pour un brouillon de la zone Draft, ou None. Le type est
+        # indispensable : les ids des deux tables se recoupent, et un brouillon ne doit
+        # jamais être enregistré dans la table des profils (ni l'inverse).
+        self._current_target = None
         
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.setCentralWidget(main_splitter)
@@ -49,22 +70,20 @@ class MainWindow(QMainWindow):
         # sans ces étirements, le layout les répartirait sur toute la hauteur.
         welcome_layout.setSpacing(theme.SPACE_SM)
         welcome_layout.addStretch()
-        lbl_welcome = QLabel("Aucun profil sélectionné")
-        lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_welcome.setStyleSheet(theme.qss(
+        self.lbl_welcome = QLabel()
+        self.lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_welcome.setStyleSheet(theme.qss(
             "color: $TEXT_SECONDARY; font-size: ${FONT_SIZE_TITLE}px; font-weight: bold;"
         ))
-        welcome_layout.addWidget(lbl_welcome)
+        welcome_layout.addWidget(self.lbl_welcome)
 
-        lbl_welcome_hint = QLabel(
-            "Choisissez un projet pour son profil en long,\n"
-            "ou un profil pour éditer son profil en travers."
-        )
-        lbl_welcome_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_welcome_hint.setStyleSheet(theme.qss(
+        self.lbl_welcome_hint = QLabel()
+        self.lbl_welcome_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_welcome_hint.setStyleSheet(theme.qss(
             "color: $TEXT_MUTED; font-size: ${FONT_SIZE_BASE}px;"
         ))
-        welcome_layout.addWidget(lbl_welcome_hint)
+        welcome_layout.addWidget(self.lbl_welcome_hint)
+        self._set_welcome_text(*self.WELCOME_DEFAULT)
         welcome_layout.addStretch()
         self.forms_stack.addWidget(welcome_widget)
         
@@ -141,7 +160,14 @@ class MainWindow(QMainWindow):
 
         # Connexions
         self.sidebar.profile_selected.connect(self.load_profile)
-        self.sidebar.project_selected.connect(self.load_project_longitudinal)
+        self.sidebar.draft_selected.connect(self.load_draft)
+        self.sidebar.scenario_selected.connect(self.load_scenario_longitudinal)
+        self.sidebar.project_selected.connect(lambda _id: self.show_placeholder(*self.WELCOME_PROJECT))
+        self.sidebar.draft_zone_selected.connect(lambda: self.show_placeholder(*self.WELCOME_DRAFT_ZONE))
+        self.sidebar.selection_cleared.connect(lambda: self.show_placeholder(*self.WELCOME_DEFAULT))
+        self.sidebar.context_changed.connect(
+            lambda: self._update_context_bar(self.sidebar.current_context())
+        )
         self.form_existing.data_changed.connect(self.save_and_update_plot)
         self.form_project.data_changed.connect(self.save_and_update_plot)
         self.form_hydraulics.data_changed.connect(self.save_and_update_plot)
@@ -151,23 +177,60 @@ class MainWindow(QMainWindow):
         self.update_plot()
 
     def _update_context_bar(self, context):
-        """Affiche "<projet> › <nom du profil>" au-dessus des onglets, ou masque le bandeau
-        si aucun profil n'est sélectionné. Les libellés viennent de la saisie utilisateur,
-        d'où l'échappement HTML avant de les injecter dans le texte enrichi du QLabel."""
+        """Affiche "<projet> › <scénario> › <nom du profil>" (ou "Draft › <brouillon>")
+        au-dessus des onglets, ou masque le bandeau si aucun profil n'est sélectionné. Les
+        libellés viennent de la saisie utilisateur, d'où l'échappement HTML avant de les
+        injecter dans le texte enrichi du QLabel."""
         if not context:
             self.lbl_context.setVisible(False)
             return
 
-        project_name, profile_name = (escape(part) for part in context)
-        self.lbl_context.setText(
-            f'<span style="color:{theme.TEXT_SECONDARY}">{project_name}</span>'
-            f'<span style="color:{theme.TEXT_MUTED}"> &rsaquo; </span>'
-            f'<span style="color:{theme.TEXT_PRIMARY}; font-weight:bold">{profile_name}</span>'
-        )
+        *parents, leaf = (escape(part) for part in context)
+        separator = f'<span style="color:{theme.TEXT_MUTED}"> &rsaquo; </span>'
+        parts = [f'<span style="color:{theme.TEXT_SECONDARY}">{name}</span>' for name in parents]
+        parts.append(f'<span style="color:{theme.TEXT_PRIMARY}; font-weight:bold">{leaf}</span>')
+        self.lbl_context.setText(separator.join(parts))
         self.lbl_context.setVisible(True)
 
+    def _set_welcome_text(self, title: str, hint: str):
+        self.lbl_welcome.setText(title)
+        self.lbl_welcome_hint.setText(hint)
+
+    def show_placeholder(self, title: str, hint: str):
+        """Rien à éditer ni à tracer (projet ou zone Draft sélectionnés, ou élément ouvert
+        supprimé) : page d'accueil à la place des formulaires, graphique vidé."""
+        self._current_target = None
+        self._update_context_bar(None)
+        self._set_welcome_text(title, hint)
+        self.forms_stack.show()
+        self.forms_stack.setCurrentIndex(0)
+        self._work_splitter.setSizes([650, 500])
+        self.plot_view.lbl_title.setText("Visualisation de la coupe transversale")
+        self.plot_view.update_plot(None, error_message=title)
+
     def load_profile(self, profile_id: int):
-        self.current_profile_id = profile_id
+        self._open_editor(("profile", profile_id))
+
+    def load_draft(self, draft_id: int):
+        """Un brouillon s'édite avec exactement le même formulaire qu'un profil ; seule la
+        table de stockage change (cf. _load_state / _save_state)."""
+        self._open_editor(("draft", draft_id))
+
+    def _load_state(self, target):
+        kind, row_id = target
+        if kind == "draft":
+            return self.db_manager.load_draft_state(row_id)
+        return self.db_manager.load_profile_state(row_id)
+
+    def _save_state(self, target, existing_data, project_data):
+        kind, row_id = target
+        if kind == "draft":
+            self.db_manager.save_draft_state(row_id, existing_data, project_data)
+        else:
+            self.db_manager.save_profile_state(row_id, existing_data, project_data)
+
+    def _open_editor(self, target):
+        self._current_target = target
 
         # Dès qu'on clique sur un profil, on révèle les formulaires à côté du graphique
         self.forms_stack.show()
@@ -176,7 +239,7 @@ class MainWindow(QMainWindow):
         self.plot_view.lbl_title.setText("Visualisation de la coupe transversale")
         self._update_context_bar(self.sidebar.current_context())
 
-        existing_data, project_data = self.db_manager.load_profile_state(profile_id)
+        existing_data, project_data = self._load_state(target)
 
         self.form_existing.set_data(existing_data)
         self.form_project.set_existing_points(existing_data)
@@ -187,33 +250,35 @@ class MainWindow(QMainWindow):
 
         self.update_plot()
 
-    def load_project_longitudinal(self, project_id: int):
-        """Clic sur le nœud projet : bascule la vue centrale vers le profil en long agrégé
-        (vue de contrôle en lecture seule, sans formulaire ni recalcul). Le panneau de
+    def load_scenario_longitudinal(self, scenario_id: int):
+        """Clic sur un scénario : bascule la vue centrale vers le profil en long agrégé de
+        ses profils (vue de contrôle en lecture seule, sans formulaire ni recalcul), avec
+        les points durs de son projet (communs à tous les scénarios). Le panneau de
         formulaires est entièrement masqué : le graphique occupe alors toute la largeur
         disponible et il n'y a plus de poignée de scission à faire glisser pour le cacher."""
-        self.current_profile_id = None
+        self._current_target = None
         self.forms_stack.hide()
         self._update_context_bar(None)
-        self.plot_view.lbl_title.setText("Profil en long du projet")
+        self.plot_view.lbl_title.setText("Profil en long du scénario")
 
-        rows = self.db_manager.get_longitudinal_data(project_id)
-        hard_points = self.db_manager.get_hard_points(project_id)
+        rows = self.db_manager.get_longitudinal_data(scenario_id)
+        project_id = self.db_manager.get_scenario_project_id(scenario_id)
+        hard_points = self.db_manager.get_hard_points(project_id) if project_id is not None else None
         fig = self.controller.build_longitudinal_figure(rows, hard_points)
         self.plot_view.update_plot(fig)
 
     def save_and_update_plot(self, _=None):
-        if self.current_profile_id is None: return
+        if self._current_target is None: return
         existing_data = self.form_existing.get_data()
         self.form_project.set_existing_points(existing_data)
         # Un seul blob project_params en base : les champs hydrauliques (slope, ks_pro,
         # calc_mode, q_target, h_eau, hydro_source, show_overlay) y sont fusionnés.
         project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
-        self.db_manager.save_profile_state(self.current_profile_id, existing_data, project_data)
+        self._save_state(self._current_target, existing_data, project_data)
         self.update_plot()
 
     def update_plot(self, _=None):
-        if self.current_profile_id is None: return
+        if self._current_target is None: return
         existing_data = self.form_existing.get_data()
         project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
         mode = self.TAB_MODES[self.tabs.currentIndex()]
