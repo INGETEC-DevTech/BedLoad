@@ -65,11 +65,15 @@ class HydraulicsForm(QWidget):
         # Manning-Strickler, ce champ n'a rien à faire dans l'onglet Géométrie.
         self.inputs['slope'] = self._create_spinbox(0.0001, 1.0, 0.001, 4)
         self.inputs['ks_pro'] = self._create_spinbox(10, 100, 1, 1, default_val=25.0)
+        # Un seul Ks pour le lit majeur (les deux rives partagent la même rugosité) :
+        # stocké ici, pas encore utilisé dans le calcul hydraulique.
+        self.inputs['floodplain_ks'] = self._create_spinbox(0, 200, 1, 1, default_val=25.0)
 
         form_hydro.addRow("Tirant d'eau h (m):", self.inputs['h_eau'])
         form_hydro.addRow("Débit Cible Q (m³/s):", self.inputs['q_target'])
         form_hydro.addRow("Pente long. (m/m):", self.inputs['slope'])
         form_hydro.addRow("Strickler (Ks):", self.inputs['ks_pro'])
+        form_hydro.addRow("Strickler (Ks) – Lit majeur:", self.inputs['floodplain_ks'])
         layout.addWidget(grp_hydro)
 
         # --- Superposition de l'autre profil ---

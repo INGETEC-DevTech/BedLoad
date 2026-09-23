@@ -30,8 +30,13 @@ class ProjectProfileForm(QWidget):
         # Raccords latéraux : (x, z) figés à la sélection, ou None si non configurés.
         self._connect_left = None
         self._connect_right = None
+        # Dernier jeu de valeurs de self.inputs connu pour donner une géométrie valide
+        # (cf. on_value_changed) : permet d'annuler une saisie qui rendrait un raccord
+        # existant invalide, en revenant à la valeur juste avant.
+        self._last_valid_values = None
 
         self._setup_geo_tab()
+        self._last_valid_values = {key: sb.value() for key, sb in self.inputs.items()}
 
     def _create_spinbox(self, min_val, max_val, step, decimals=2, default_val=None):
         sb = QDoubleSpinBox()
@@ -42,6 +47,48 @@ class ProjectProfileForm(QWidget):
             sb.setValue(default_val)
         sb.valueChanged.connect(self.on_value_changed)
         return sb
+
+    def _make_section_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(theme.qss(
+            "font-size: ${FONT_SIZE_SM}px; font-weight: bold; color: $TEXT_SECONDARY;"
+        ))
+        return lbl
+
+    def _make_separator(self) -> QFrame:
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet(theme.qss("QFrame { color: $BORDER; }"))
+        return separator
+
+    def _build_side_groupbox(self, title, banquette_rows, berge_rows, floodplain_rows) -> QGroupBox:
+        """Boîte "Gauche"/"Droite" regroupant, pour une rive donnée, tous les paramètres
+        de Banquette, Berges et Lit majeur (dans cet ordre : du plus proche au plus
+        éloigné de l'axe du lit), avec un séparateur entre chaque segment."""
+        grp = QGroupBox(title)
+        box_layout = QVBoxLayout(grp)
+        box_layout.setSpacing(theme.SPACE_SM)
+
+        form_banquette = QFormLayout()
+        for label, widget in banquette_rows:
+            form_banquette.addRow(label, widget)
+        box_layout.addLayout(form_banquette)
+
+        box_layout.addWidget(self._make_section_label("Berges"))
+        box_layout.addWidget(self._make_separator())
+        form_berge = QFormLayout()
+        for label, widget in berge_rows:
+            form_berge.addRow(label, widget)
+        box_layout.addLayout(form_berge)
+
+        box_layout.addWidget(self._make_section_label("Lit majeur"))
+        box_layout.addWidget(self._make_separator())
+        form_floodplain = QFormLayout()
+        for label, widget in floodplain_rows:
+            form_floodplain.addRow(label, widget)
+        box_layout.addLayout(form_floodplain)
+
+        return grp
 
     def _setup_geo_tab(self):
         scroll = QScrollArea()
@@ -91,48 +138,60 @@ class ProjectProfileForm(QWidget):
         form_bed.addRow("Pente bords (H/V):", self.inputs['bed_side_slope'])
         layout.addWidget(grp_bed)
 
-        # Un seul QGroupBox pour "Banquettes && Berges" (pas deux, pour ne pas alourdir
-        # le bloc), mais deux sous-parties visuellement distinguées par un séparateur
-        # fin : les largeurs de banquette et les pentes de berge n'ont pas de rapport
-        # direct entre elles, malgré leur regroupement historique dans un même cadre.
-        grp_berms = QGroupBox("Banquettes && Berges")
-        layout_berms = QVBoxLayout(grp_berms)
-        layout_berms.setSpacing(theme.SPACE_SM)
+        # Banquette, Berges et Lit majeur : une boîte par rive (Gauche / Droite), côte à
+        # côte, chaque boîte regroupant tous les paramètres de cette rive pour les trois
+        # segments, du plus proche au plus éloigné de l'axe du lit. Le lit trapézoïdal
+        # n'a pas de notion gauche/droite et reste dans son propre groupe ci-dessus.
+        row_sides = QHBoxLayout()
+        row_sides.setSpacing(theme.SPACE_SM)
 
-        form_banquettes = QFormLayout()
         self.inputs['berm_width_left'] = self._create_spinbox(0, 100, 0.1)
-        self.inputs['berm_width_right'] = self._create_spinbox(0, 100, 0.1)
         self.inputs['berm_slope_left'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
-        self.inputs['berm_slope_right'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
-        form_banquettes.addRow("Banquette RG (m):", self.inputs['berm_width_left'])
-        form_banquettes.addRow("Banquette RD (m):", self.inputs['berm_width_right'])
-        form_banquettes.addRow("Pente Banquette G (m/m):", self.inputs['berm_slope_left'])
-        form_banquettes.addRow("Pente Banquette D (m/m):", self.inputs['berm_slope_right'])
-        layout_berms.addLayout(form_banquettes)
-
-        lbl_berges = QLabel("Berges")
-        lbl_berges.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; font-weight: bold; color: $TEXT_SECONDARY;"
-        ))
-        layout_berms.addWidget(lbl_berges)
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet(theme.qss("QFrame { color: $BORDER; }"))
-        layout_berms.addWidget(separator)
-
-        form_berges = QFormLayout()
         self.inputs['bank_slope_left'] = self._create_spinbox(0.01, 100, 0.1)
         self.inputs['bank_width_left'] = self._create_spinbox(0, 100, 0.1)
+        self.inputs['floodplain_width_left'] = self._create_spinbox(0, 1000, 0.1)
+        self.inputs['floodplain_slope_left'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
+        grp_left = self._build_side_groupbox(
+            "Gauche",
+            banquette_rows=[
+                ("Banquette G (m):", self.inputs['berm_width_left']),
+                ("Pente Banquette G (m/m):", self.inputs['berm_slope_left']),
+            ],
+            berge_rows=[
+                ("Pente Berge G (H/V):", self.inputs['bank_slope_left']),
+                ("Largeur Berge G (m):", self.inputs['bank_width_left']),
+            ],
+            floodplain_rows=[
+                ("Largeur Lit majeur G (m):", self.inputs['floodplain_width_left']),
+                ("Pente Lit majeur G (m/m):", self.inputs['floodplain_slope_left']),
+            ],
+        )
+
+        self.inputs['berm_width_right'] = self._create_spinbox(0, 100, 0.1)
+        self.inputs['berm_slope_right'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
         self.inputs['bank_slope_right'] = self._create_spinbox(0.01, 100, 0.1)
         self.inputs['bank_width_right'] = self._create_spinbox(0, 100, 0.1)
-        form_berges.addRow("Pente Berge G (H/V):", self.inputs['bank_slope_left'])
-        form_berges.addRow("Largeur Berge G (m):", self.inputs['bank_width_left'])
-        form_berges.addRow("Pente Berge D (H/V):", self.inputs['bank_slope_right'])
-        form_berges.addRow("Largeur Berge D (m):", self.inputs['bank_width_right'])
-        layout_berms.addLayout(form_berges)
+        self.inputs['floodplain_width_right'] = self._create_spinbox(0, 1000, 0.1)
+        self.inputs['floodplain_slope_right'] = self._create_spinbox(0.0, 1.0, 0.001, 4)
+        grp_right = self._build_side_groupbox(
+            "Droite",
+            banquette_rows=[
+                ("Banquette D (m):", self.inputs['berm_width_right']),
+                ("Pente Banquette D (m/m):", self.inputs['berm_slope_right']),
+            ],
+            berge_rows=[
+                ("Pente Berge D (H/V):", self.inputs['bank_slope_right']),
+                ("Largeur Berge D (m):", self.inputs['bank_width_right']),
+            ],
+            floodplain_rows=[
+                ("Largeur Lit majeur D (m):", self.inputs['floodplain_width_right']),
+                ("Pente Lit majeur D (m/m):", self.inputs['floodplain_slope_right']),
+            ],
+        )
 
-        layout.addWidget(grp_berms)
+        row_sides.addWidget(grp_left, stretch=1)
+        row_sides.addWidget(grp_right, stretch=1)
+        layout.addLayout(row_sides)
 
         # --- Raccord au terrain naturel (optionnel, de chaque côté) ---
         grp_connect = QGroupBox("Raccord au terrain naturel")
@@ -223,6 +282,7 @@ class ProjectProfileForm(QWidget):
         self._connect_right = (cx_r, cz_r) if cx_r is not None and cz_r is not None else None
         self._update_connect_ui('right')
 
+        self._last_valid_values = {key: sb.value() for key, sb in self.inputs.items()}
         self._is_loading = False
 
     def set_existing_points(self, existing_data: list):
@@ -268,8 +328,9 @@ class ProjectProfileForm(QWidget):
         self.on_value_changed()
 
     def _bank_top_x(self, side: str) -> float:
-        """Reproduit le calcul de hdbg.x / hdbd.x de core.geometry.build_project_cross_section,
-        pour valider un point de raccord AVANT de l'enregistrer (même règle des deux côtés)."""
+        """Reproduit le calcul du bout du lit majeur (ou, à défaut, de hdbg.x / hdbd.x) de
+        core.geometry.build_project_cross_section, pour valider un point de raccord AVANT
+        de l'enregistrer (même règle des deux côtés)."""
         anchor_x = self.inputs['anchor_x'].value()
         bed_side_slope = self.inputs['bed_side_slope'].value()
         bed_depth = self.inputs['bed_depth'].value()
@@ -277,12 +338,16 @@ class ProjectProfileForm(QWidget):
         if side == 'left':
             banq_x = anchor_x - bed_side_slope * bed_depth
             pdb_x = banq_x - self.inputs['berm_width_left'].value()
-            return pdb_x - self.inputs['bank_width_left'].value()
+            hdb_x = pdb_x - self.inputs['bank_width_left'].value()
+            floodplain_width = self.inputs['floodplain_width_left'].value()
+            return hdb_x - floodplain_width if floodplain_width > 0 else hdb_x
 
         fdld_x = anchor_x + self.inputs['bed_width'].value()
         banq_x = fdld_x + bed_side_slope * bed_depth
         pdb_x = banq_x + self.inputs['berm_width_right'].value()
-        return pdb_x + self.inputs['bank_width_right'].value()
+        hdb_x = pdb_x + self.inputs['bank_width_right'].value()
+        floodplain_width = self.inputs['floodplain_width_right'].value()
+        return hdb_x + floodplain_width if floodplain_width > 0 else hdb_x
 
     def _pick_connect_point(self, side: str):
         if not self._existing_points:
@@ -351,6 +416,66 @@ class ProjectProfileForm(QWidget):
         lbl.setVisible(connect is not None)
         btn_remove.setVisible(connect is not None)
 
+    def _invalid_connect_side(self) -> str | None:
+        """Reproduit la validation de core.geometry.build_project_cross_section pour
+        détecter, à partir des valeurs ACTUELLES des spinboxes, si un raccord existant
+        est devenu invalide (point plus proche de l'axe du lit que le bout du lit
+        majeur, ou à défaut le haut de berge)."""
+        if self._connect_left is not None:
+            cx, _ = self._connect_left
+            if not (cx < self._bank_top_x('left')):
+                return 'left'
+
+        if self._connect_right is not None:
+            cx, _ = self._connect_right
+            if not (cx > self._bank_top_x('right')):
+                return 'right'
+
+        return None
+
+    def _restore_last_valid_values(self):
+        if self._last_valid_values is None:
+            return
+        self._is_loading = True
+        for key, value in self._last_valid_values.items():
+            if key in self.inputs:
+                self.inputs[key].setValue(value)
+        self._is_loading = False
+
+    def _handle_invalid_connect(self, side: str):
+        """La dernière saisie rend le raccord {side} invalide : on propose soit
+        d'annuler la saisie (retour à la valeur juste avant), soit de retirer ce
+        raccord pour conserver la nouvelle valeur. Le graphique n'est pas touché
+        tant que l'utilisateur n'a pas choisi : il continue d'afficher le dernier
+        état valide."""
+        side_label = "gauche" if side == 'left' else "droit"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Modification refusée")
+        box.setText(
+            f"Cette modification placerait le point de raccord {side_label} plus "
+            "proche de l'axe du lit que le bout du lit majeur (ou le haut de berge) "
+            "actuel — géométrie invalide."
+        )
+        btn_cancel = box.addButton("Annuler la modification", QMessageBox.ButtonRole.RejectRole)
+        btn_remove = box.addButton("Retirer le raccord", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(btn_cancel)
+        box.exec()
+
+        if box.clickedButton() is btn_remove:
+            self._remove_connect_point(side)
+        else:
+            self._restore_last_valid_values()
+
     def on_value_changed(self):
-        if not self._is_loading:
-            self.data_changed.emit(self.get_data())
+        if self._is_loading:
+            return
+
+        invalid_side = self._invalid_connect_side()
+        if invalid_side is not None:
+            self._handle_invalid_connect(invalid_side)
+            return
+
+        self._last_valid_values = {key: sb.value() for key, sb in self.inputs.items()}
+        self.data_changed.emit(self.get_data())

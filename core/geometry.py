@@ -32,6 +32,12 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
         banquette droite (banq2)
         pied de berge droit (pdbd)
         haut de berge droit (hdbd)
+
+    Un lit majeur optionnel peut s'ajouter de chaque côté, juste après la berge
+    (donc avant hdbg / après hdbd) : bout du lit majeur gauche (lmg) et bout du
+    lit majeur droit (lmd). Il n'apparaît que si sa largeur (floodplain_width_*)
+    est strictement positive ; à 0 (valeur par défaut), le comportement est
+    inchangé.
     """
     p = params
 
@@ -54,27 +60,48 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
     hdbg = Point(x=pdbg.x - p.bank_width_left, z=pdbg.z + p.bank_width_left / p.bank_slope_left)
     hdbd = Point(x=pdbd.x + p.bank_width_right, z=pdbd.z + p.bank_width_right / p.bank_slope_right)
 
+    # Lit majeur optionnel (largeur horizontale, pente floodplain_slope montante vers
+    # l'extérieur ; 0 = plat, comportement historique). N'est ajouté que si sa largeur
+    # est strictement positive, sinon le point serait un doublon exact de hdbg/hdbd.
+    lmg = None
+    if p.floodplain_width_left > 0:
+        lmg = Point(x=hdbg.x - p.floodplain_width_left, z=hdbg.z + p.floodplain_width_left * p.floodplain_slope_left)
+
+    lmd = None
+    if p.floodplain_width_right > 0:
+        lmd = Point(x=hdbd.x + p.floodplain_width_right, z=hdbd.z + p.floodplain_width_right * p.floodplain_slope_right)
+
+    # Bout de la géométrie côté gauche/droit avant un éventuel raccord : le lit majeur
+    # quand il est activé, sinon le haut de berge (comportement historique).
+    end_left = lmg if lmg is not None else hdbg
+    end_right = lmd if lmd is not None else hdbd
+
     # Raccord optionnel vers un point du profil existant, choisi manuellement (valeur
-    # figée à la sélection) : prolonge la géométrie au-delà du haut de berge actuel.
+    # figée à la sélection) : prolonge la géométrie au-delà du bout du lit majeur (ou,
+    # à défaut, du haut de berge).
     raccord_g = None
     if p.connect_x_left is not None:
-        if not (p.connect_x_left < hdbg.x):
+        if not (p.connect_x_left < end_left.x):
             raise ValueError(
                 "Le point de raccord gauche est plus proche de l'axe du lit que le "
-                "haut de berge actuel — géométrie invalide."
+                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
             )
         raccord_g = Point(x=p.connect_x_left, z=p.connect_z_left)
 
     raccord_d = None
     if p.connect_x_right is not None:
-        if not (p.connect_x_right > hdbd.x):
+        if not (p.connect_x_right > end_right.x):
             raise ValueError(
                 "Le point de raccord droit est plus proche de l'axe du lit que le "
-                "haut de berge actuel — géométrie invalide."
+                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
             )
         raccord_d = Point(x=p.connect_x_right, z=p.connect_z_right)
 
     points = [hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd]
+    if lmg is not None:
+        points.insert(0, lmg)
+    if lmd is not None:
+        points.append(lmd)
     if raccord_g is not None:
         points.insert(0, raccord_g)
     if raccord_d is not None:

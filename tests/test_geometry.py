@@ -49,6 +49,59 @@ def test_bed_width_sets_bed_corners_distance():
     assert fdld.z == pytest.approx(fdlg.z)
 
 
+def test_floodplain_disabled_by_default_keeps_legacy_behavior():
+    """Largeur de lit majeur nulle par défaut -> aucun point ajouté, comportement inchangé."""
+    params = ProjectParameters()
+    section = build_project_cross_section(params)
+
+    assert len(section.points) == 8
+
+
+def test_floodplain_adds_point_beyond_bank_top_when_enabled():
+    """Un lit majeur actif (largeur > 0) ajoute un point après le haut de berge, côté extérieur."""
+    params = ProjectParameters(floodplain_width_left=4.0, floodplain_slope_left=0.02,
+                                floodplain_width_right=2.0, floodplain_slope_right=0.0)
+    section = build_project_cross_section(params)
+
+    assert len(section.points) == 10
+    hdbg, hdbd = section.points[1], section.points[-2]
+    lmg, lmd = section.points[0], section.points[-1]
+
+    assert lmg.x == pytest.approx(hdbg.x - 4.0)
+    assert lmg.z == pytest.approx(hdbg.z + 4.0 * 0.02)
+    assert lmd.x == pytest.approx(hdbd.x + 2.0)
+    assert lmd.z == pytest.approx(hdbd.z)
+
+    xs = [p.x for p in section.points]
+    assert xs == sorted(xs)
+    assert len(set(xs)) == len(xs)
+
+
+def test_connect_point_validated_against_floodplain_end_when_present():
+    """Le raccord doit désormais partir du bout du lit majeur (et non plus du haut de berge)
+    quand celui-ci est actif."""
+    params = ProjectParameters(floodplain_width_left=4.0)
+    floodplain_end_x = build_project_cross_section(params).points[0].x
+
+    # Un raccord placé entre le haut de berge et le bout du lit majeur est désormais invalide.
+    invalid_params = ProjectParameters(
+        floodplain_width_left=4.0,
+        connect_x_left=floodplain_end_x + 0.5,
+        connect_z_left=100.0,
+    )
+    with pytest.raises(ValueError):
+        build_project_cross_section(invalid_params)
+
+    # Un raccord au-delà du bout du lit majeur reste valide.
+    valid_params = ProjectParameters(
+        floodplain_width_left=4.0,
+        connect_x_left=floodplain_end_x - 0.5,
+        connect_z_left=100.0,
+    )
+    section = build_project_cross_section(valid_params)
+    assert section.points[0].x == pytest.approx(floodplain_end_x - 0.5)
+
+
 def test_zero_bank_slope_raises_zero_division_error():
     """Documente un bug connu (cf. audit) : une pente de berge nulle provoque une division par zéro
     au niveau du modèle, sans validation ni message d'erreur explicite. Ce test doit être mis à jour

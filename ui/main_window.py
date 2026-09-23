@@ -100,6 +100,11 @@ class MainWindow(QMainWindow):
 
         self.forms_stack.addWidget(forms_widget)
 
+        # Largeur minimum : sous ce seuil, les colonnes Gauche/Droite du profil projet
+        # (Banquette/Berges/Lit majeur) et les boutons de raccord ne tiennent plus et se
+        # retrouvent coupés (la zone de formulaires n'a pas de barre de défilement
+        # horizontale, elle se contente de rétrécir son contenu).
+        self.forms_stack.setMinimumWidth(650)
         work_splitter.addWidget(self.forms_stack)
 
         # 2b. Panneau du graphique (Toujours visible pour éviter le clignotement OpenGL)
@@ -111,9 +116,12 @@ class MainWindow(QMainWindow):
 
         self._work_splitter = work_splitter
 
-        # On impose la répartition de l'espace au démarrage
+        # On impose la répartition de l'espace au démarrage : le panneau de formulaires
+        # est élargi pour que ses deux colonnes Gauche/Droite tiennent entièrement, au
+        # prix d'une largeur réduite (mais toujours lisible, cf. setMinimumWidth ci-dessus)
+        # pour le graphique.
         main_splitter.setSizes([250, 1150])
-        work_splitter.setSizes([450, 700])
+        work_splitter.setSizes([650, 500])
 
         # Quand la fenêtre est agrandie, tout l'espace en plus va au graphique : la sidebar
         # et le panneau de formulaires gardent leur taille (stretch 0), seul le panneau de
@@ -164,7 +172,7 @@ class MainWindow(QMainWindow):
         # Dès qu'on clique sur un profil, on révèle les formulaires à côté du graphique
         self.forms_stack.show()
         self.forms_stack.setCurrentIndex(1)
-        self._work_splitter.setSizes([450, 700])
+        self._work_splitter.setSizes([650, 500])
         self.plot_view.lbl_title.setText("Visualisation de la coupe transversale")
         self._update_context_bar(self.sidebar.current_context())
 

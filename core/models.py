@@ -43,11 +43,13 @@ class ProjectParameters:
     bank_width_right: float = 3.0
     delete_point_right_bank: bool = False
 
-    # --- Lit majeur ---
-    floodplain_slope_left: float = 10000.0
-    floodplain_smooth_left: bool = False
-    floodplain_slope_right: float = 10000.0
-    floodplain_smooth_right: bool = False
+    # --- Lit majeur (segment optionnel après la berge ; largeur = 0 -> désactivé,
+    # comportement inchangé) ---
+    floodplain_width_left: float = 0.0
+    floodplain_width_right: float = 0.0
+    floodplain_slope_left: float = 0.0
+    floodplain_slope_right: float = 0.0
+
     x_end_profile_left: float = 0.1
     x_end_profile_right: float = 11.0
 
@@ -73,6 +75,9 @@ class ProjectParameters:
     h_eau: float = 0.42
     q_target: float = 15.0
     ks_pro: float = 25.0
+    # Rugosité (Strickler) du lit majeur : stockée pour un usage futur, pas encore
+    # utilisée dans le calcul hydraulique (un seul paramètre pour les deux rives).
+    floodplain_ks: float = 25.0
 
     # --- Raccords latéraux optionnels vers le profil existant ---
     # Choisis manuellement (valeur figée à la sélection) : prolongent la géométrie
