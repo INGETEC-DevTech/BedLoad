@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
-from core.hydraulics import compute_hydraulic_params, find_water_level_for_discharge
+from core.hydraulics import resolve_hydraulic_result
 from core.longitudinal import build_longitudinal_profile
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 from ui import theme
@@ -95,17 +95,16 @@ class ProfileController:
             z_ref = params.anchor_z
             color = PROJECT_COLOR
 
-        # --- Moteur Hydraulique ---
+        # --- Moteur Hydraulique --- (fonction pure, cf. core.hydraulics.resolve_hydraulic_result :
+        # aucune valeur ne peut "fuiter" d'un appel précédent, tout est recalculé depuis
+        # hydro_data/section actuels à chaque appel de _build_hydraulics_figure)
         calc_mode = hydro_data.get('calc_mode', 'Q_FROM_H')
         slope = hydro_data.get('slope', 0.005)
         ks = hydro_data.get('ks_pro', 25.0)
+        q_target = hydro_data.get('q_target', 15.0)
+        h_eau = hydro_data.get('h_eau', 0.5)
 
-        if calc_mode == 'H_FROM_Q':
-            q_target = hydro_data.get('q_target', 15.0)
-            res = find_water_level_for_discharge(section, q_target, slope, ks)
-        else:
-            h_eau = hydro_data.get('h_eau', 0.5)
-            res = compute_hydraulic_params(section, z_ref + h_eau, slope, ks)
+        res = resolve_hydraulic_result(section, calc_mode, q_target, h_eau, z_ref, slope, ks)
 
         # --- Génération de la figure ---
         if show_overlay:

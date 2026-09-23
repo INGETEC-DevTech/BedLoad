@@ -4,20 +4,33 @@ from typing import Tuple, Optional
 from core.models import Point, CrossSection
 
 def get_water_intersections(section: CrossSection, water_z: float) -> Tuple[Optional[float], Optional[float]]:
-    """Trouve automatiquement les abscisses (X) d'intersection entre la ligne d'eau et le terrain."""
+    """Trouve automatiquement les abscisses (X) d'intersection entre la ligne d'eau et le terrain.
+
+    L'intervalle testé par segment est fermé des deux côtés ([min, max], et non [min, max[)
+    pour que le cas où le niveau d'eau touche exactement le point le plus haut du profil
+    (typiquement en fin de dichotomie, cf. find_water_level_for_discharge, quand le débit
+    cible dépasse la capacité du profil) compte bien comme une intersection, au lieu d'un
+    débit nul. Les intersections trouvées sont dédupliquées par abscisse : sans ça, un
+    niveau d'eau touchant exactement un sommet intérieur partagé par deux segments (ex :
+    le haut d'une banquette) compterait deux fois le même point."""
     pts = section.points
     intersections = []
-    
+
     for i in range(len(pts) - 1):
-        p1, p2 = pts[i], pts[i+1]
-        # Vérifie si le segment traverse la ligne d'eau
-        if min(p1.z, p2.z) <= water_z < max(p1.z, p2.z):
-            # Interpolation linéaire pour trouver le X exact
-            x_int = p1.x + (water_z - p1.z) * (p2.x - p1.x) / (p2.z - p1.z)
-            intersections.append(x_int)
-            
-    if len(intersections) >= 2:
-        return min(intersections), max(intersections)
+        p1, p2 = pts[i], pts[i + 1]
+        if min(p1.z, p2.z) <= water_z <= max(p1.z, p2.z):
+            if p1.z == p2.z:
+                # Segment horizontal exactement à la cote d'eau : les deux extrémités sont
+                # valides (et l'interpolation ci-dessous diviserait par zéro).
+                intersections.append(p1.x)
+                intersections.append(p2.x)
+            else:
+                x_int = p1.x + (water_z - p1.z) * (p2.x - p1.x) / (p2.z - p1.z)
+                intersections.append(x_int)
+
+    unique_x = sorted(set(round(x, 9) for x in intersections))
+    if len(unique_x) >= 2:
+        return unique_x[0], unique_x[-1]
     return None, None
 
 def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float, ks: float) -> dict:
@@ -76,3 +89,22 @@ def find_water_level_for_discharge(section: CrossSection, target_q: float, slope
             
     # Si la crue est immense, elle s'arrête au sommet des berges géométriques
     return compute_hydraulic_params(section, high, slope, ks)
+
+
+def resolve_hydraulic_result(
+    section: CrossSection, calc_mode: str,
+    q_target: float, h_eau: float, z_ref: float, slope: float, ks: float,
+) -> dict:
+    """Point d'entrée unique pour obtenir le résultat hydraulique à afficher, quel que soit
+    le mode de dimensionnement :
+    - calc_mode == 'H_FROM_Q' ("Imposer Q") : résout le tirant d'eau pour le débit cible.
+    - sinon ('Q_FROM_H', "Imposer H") : calcule directement pour le tirant d'eau saisi.
+
+    Fonction pure et sans état : chaque appel recalcule entièrement à partir des arguments
+    reçus (section, mode et grandeur imposée). Rien n'est mémorisé d'un appel à l'autre, donc
+    changer de mode, de profil (section différente) ou de valeur imposée ne peut jamais faire
+    réapparaître un résultat d'un appel précédent — le seul moyen d'obtenir un résultat
+    obsolète serait d'appeler cette fonction avec des arguments eux-mêmes obsolètes."""
+    if calc_mode == 'H_FROM_Q':
+        return find_water_level_for_discharge(section, q_target, slope, ks)
+    return compute_hydraulic_params(section, z_ref + h_eau, slope, ks)
