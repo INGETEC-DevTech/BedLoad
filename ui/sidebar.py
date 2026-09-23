@@ -1,10 +1,10 @@
 # ui/sidebar.py
 from html import escape
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
                              QInputDialog, QMessageBox, QMenu, QApplication, QStyle,
-                             QStyledItemDelegate, QDialog)
+                             QStyledItemDelegate, QDialog, QFileDialog)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
 from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME
@@ -31,6 +31,15 @@ _EXPANDABLE_TYPES = (PROJECT, SCENARIO, DRAFT_ROOT)
 # Nœuds qui ouvrent le formulaire complet (profil existant / projet / hydraulique).
 _EDITABLE_TYPES = (PROFILE, DRAFT)
 _DRAFT_ZONE_LABEL = "Draft"
+
+# Valeur sentinelle choisie dans le sélecteur de destination d'un import/copie de profil
+# (cf. _prompt_scenario_or_draft), pour la distinguer d'un id de scénario (entier).
+_DRAFT_DESTINATION = "__draft__"
+_DRAFT_DESTINATION_LABEL = "Draft (brouillons)"
+
+# Libellés des trois formes de fichier d'export, pour les messages d'erreur d'import
+# (cf. Sidebar._pick_import_file).
+_TYPE_LABELS = {"profile": "profil", "scenario": "scénario", "project": "projet"}
 
 
 def _key(data: dict) -> tuple:
@@ -304,9 +313,17 @@ class Sidebar(QWidget):
         )
         self.btn_add_profile.setStyleSheet(secondary_qss)
 
+        self.btn_import = QPushButton("Importer...")
+        self.btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import.setToolTip(
+            "Importe un fichier .json exporté depuis HydroTopo (profil, scénario ou projet)."
+        )
+        self.btn_import.setStyleSheet(secondary_qss)
+
         self.main_layout.addWidget(self.btn_add_project)
         self.main_layout.addWidget(self.btn_add_scenario)
         self.main_layout.addWidget(self.btn_add_profile)
+        self.main_layout.addWidget(self.btn_import)
 
         # 3. Arborescence épurée
         self.tree_view = _ProjectTreeView()
@@ -337,6 +354,7 @@ class Sidebar(QWidget):
         self.btn_add_project.clicked.connect(self.add_project)
         self.btn_add_scenario.clicked.connect(self.add_scenario)
         self.btn_add_profile.clicked.connect(self.add_profile)
+        self.btn_import.clicked.connect(self.import_file)
         self.tree_view.clicked.connect(self.on_item_clicked)
 
         self.refresh_tree()
@@ -803,6 +821,181 @@ class Sidebar(QWidget):
         self.refresh_tree()
         self._select((DRAFT, new_draft_id))
 
+    # --- Export / Import (JSON) ---
+
+    def _scenario_choices(self) -> List[Tuple[str, int]]:
+        """Libellés "Projet › Scénario" de tous les scénarios existants, tous projets
+        confondus : alimente les sélecteurs de destination d'un import/copie de profil."""
+        return [
+            (f"{project['name']} › {scenario['name']}", scenario["id"])
+            for project in self.db.get_all_projects() for scenario in project["scenarios"]
+        ]
+
+    def _project_choices(self) -> List[Tuple[str, int]]:
+        return [(p["name"], p["id"]) for p in self.db.get_all_projects()]
+
+    def _prompt_choice(self, title: str, label: str, choices: List[Tuple[str, object]]):
+        """Sélection dans une liste de (libellé, valeur) via une boîte de dialogue.
+        Renvoie la valeur choisie, ou None si annulé. Suppose les libellés uniques (vrai
+        ici : les noms de projet sont uniques, et "Projet › Scénario" l'est donc aussi)."""
+        labels = [c[0] for c in choices]
+        chosen, ok = QInputDialog.getItem(self, title, label, labels, 0, False)
+        if not ok:
+            return None
+        return dict(choices)[chosen]
+
+    def _prompt_scenario_destination(self, title: str) -> Optional[int]:
+        choices = self._scenario_choices()
+        if not choices:
+            QMessageBox.warning(self, "Attention", "Aucun scénario : créez d'abord un projet et un scénario.")
+            return None
+        return self._prompt_choice(title, "Scénario de destination :", choices)
+
+    def _prompt_scenario_or_draft_destination(self, title: str):
+        """Comme _prompt_scenario_destination, avec la zone Draft en option
+        supplémentaire. Renvoie un id de scénario (int), _DRAFT_DESTINATION, ou None si
+        annulé (jamais None faute de choix : la zone Draft est toujours proposée)."""
+        choices = self._scenario_choices() + [(_DRAFT_DESTINATION_LABEL, _DRAFT_DESTINATION)]
+        return self._prompt_choice(title, "Destination :", choices)
+
+    def _prompt_project_destination(self, title: str) -> Optional[int]:
+        choices = self._project_choices()
+        if not choices:
+            QMessageBox.warning(self, "Attention", "Aucun projet : créez-en un d'abord.")
+            return None
+        return self._prompt_choice(title, "Projet de destination :", choices)
+
+    def _export_to_file(self, title: str, default_name: str, write_fn):
+        """Demande un chemin de sauvegarde et y écrit l'export produit par `write_fn`
+        (l'une des méthodes DatabaseManager.export_*_to_file)."""
+        path, _ = QFileDialog.getSaveFileName(self, title, f"{default_name}.json", "Fichiers JSON (*.json)")
+        if not path:
+            return
+        try:
+            write_fn(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+
+    def export_profile_item(self, data: dict, name: str):
+        self._export_to_file(
+            "Exporter le profil", name, lambda path: self.db.export_profile_to_file(data["id"], path)
+        )
+
+    def export_draft_item(self, data: dict, name: str):
+        self._export_to_file(
+            "Exporter le brouillon", name, lambda path: self.db.export_draft_to_file(data["id"], path)
+        )
+
+    def export_scenario_item(self, data: dict, name: str):
+        self._export_to_file(
+            "Exporter le scénario", name, lambda path: self.db.export_scenario_to_file(data["id"], path)
+        )
+
+    def export_project_item(self, data: dict, name: str):
+        self._export_to_file(
+            "Exporter le projet", name, lambda path: self.db.export_project_to_file(data["id"], path)
+        )
+
+    def copy_draft_to_scenario(self, data: dict, name: str):
+        """Copie un brouillon vers un scénario choisi par l'utilisateur, comme nouveau
+        profil indépendant : même collecte/insertion qu'un import de fichier profil, mais
+        en mémoire. Le brouillon source reste inchangé dans la zone Draft."""
+        scenario_id = self._prompt_scenario_destination(f"Copier « {name} » vers…")
+        if scenario_id is None:
+            return
+        try:
+            new_profile_id = self.db.copy_draft_to_scenario(data["id"], scenario_id)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
+        self.refresh_tree()
+        self._select((PROFILE, new_profile_id))
+
+    def _pick_import_file(self, expected_type: Optional[str] = None) -> Optional[dict]:
+        """Ouvre un sélecteur de fichier .json et lit/valide son contenu (cf.
+        DatabaseManager.read_export_file). Si `expected_type` est fourni, vérifie aussi
+        que le fichier est bien de ce type ("profile", "scenario" ou "project"). Renvoie
+        None si l'utilisateur annule, ou après un message d'erreur si le fichier ne
+        convient pas."""
+        path, _ = QFileDialog.getOpenFileName(self, "Importer", "", "Fichiers JSON (*.json)")
+        if not path:
+            return None
+
+        try:
+            data = self.db.read_export_file(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return None
+
+        if expected_type is not None and data["type"] != expected_type:
+            QMessageBox.warning(
+                self, "Erreur",
+                f"Ce fichier n'est pas un export de {_TYPE_LABELS[expected_type]} "
+                f"(c'est un export de {_TYPE_LABELS[data['type']]})."
+            )
+            return None
+        return data
+
+    def _run_import(self, action, node_type: str):
+        """Exécute un import déjà résolu (fichier lu, destination choisie), rafraîchit
+        l'arbre et sélectionne l'élément nouvellement créé."""
+        try:
+            new_id = action()
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
+        self.refresh_tree()
+        self._select((node_type, new_id))
+
+    def import_file(self):
+        """Bouton "Importer..." : choisit un fichier .json exporté depuis HydroTopo et
+        l'importe au bon endroit selon son type — un profil demande un scénario ou la
+        zone Draft, un scénario demande un projet, un projet ne demande rien (toujours
+        créé comme nouveau projet, cf. DatabaseManager.import_project)."""
+        data = self._pick_import_file()
+        if data is None:
+            return
+
+        kind = data["type"]
+        if kind == "project":
+            self._run_import(lambda: self.db.import_project(data), PROJECT)
+        elif kind == "scenario":
+            project_id = self._prompt_project_destination("Importer le scénario dans…")
+            if project_id is None:
+                return
+            self._run_import(lambda: self.db.import_scenario_into_project(project_id, data), SCENARIO)
+        else:  # "profile"
+            destination = self._prompt_scenario_or_draft_destination("Importer le profil dans…")
+            if destination is None:
+                return
+            if destination == _DRAFT_DESTINATION:
+                self._run_import(lambda: self.db.import_profile_into_drafts(data), DRAFT)
+            else:
+                self._run_import(lambda: self.db.import_profile_into_scenario(destination, data), PROFILE)
+
+    def import_profile_into_scenario_item(self, data: dict):
+        """Menu contextuel d'un scénario : importe directement un fichier profil dedans,
+        sans redemander la destination."""
+        imported = self._pick_import_file(expected_type="profile")
+        if imported is None:
+            return
+        self._run_import(lambda: self.db.import_profile_into_scenario(data["id"], imported), PROFILE)
+
+    def import_scenario_into_project_item(self, data: dict):
+        """Menu contextuel d'un projet : importe directement un fichier scénario dedans."""
+        imported = self._pick_import_file(expected_type="scenario")
+        if imported is None:
+            return
+        self._run_import(lambda: self.db.import_scenario_into_project(data["id"], imported), SCENARIO)
+
+    def import_profile_into_drafts_item(self):
+        """Menu contextuel de la zone Draft : importe directement un fichier profil comme
+        nouveau brouillon."""
+        imported = self._pick_import_file(expected_type="profile")
+        if imported is None:
+            return
+        self._run_import(lambda: self.db.import_profile_into_drafts(imported), DRAFT)
+
     # --- Menu contextuel et suppression ---
 
     def open_context_menu(self, position):
@@ -824,23 +1017,31 @@ class Sidebar(QWidget):
 
         if node_type == PROJECT:
             add("Nouveau scénario...", lambda: self.create_scenario(data["id"]))
+            add("Importer un scénario...", lambda: self.import_scenario_into_project_item(data))
             menu.addSeparator()
             add("Renommer", lambda: self.rename_project_item(data, name))
             add("Dupliquer", lambda: self.duplicate_project(data, name))
             add("Points durs...", lambda: self.edit_hard_points(data))
+            add("Exporter...", lambda: self.export_project_item(data, name))
         elif node_type == SCENARIO:
             add("Nouveau profil...", lambda: self.add_profile_to_scenario(data["id"], data["project_id"]))
+            add("Importer un profil...", lambda: self.import_profile_into_scenario_item(data))
             menu.addSeparator()
             add("Renommer", lambda: self.rename_scenario(data, name))
             add("Dupliquer...", lambda: self.duplicate_scenario(data, name))
+            add("Exporter...", lambda: self.export_scenario_item(data, name))
         elif node_type == PROFILE:
             add("Renommer", lambda: self.rename_profile(data, name))
             add("Dupliquer", lambda: self.duplicate_profile(data, name))
+            add("Exporter...", lambda: self.export_profile_item(data, name))
         elif node_type == DRAFT_ROOT:
             add("Nouveau brouillon...", self.add_draft)
+            add("Importer un profil...", self.import_profile_into_drafts_item)
         elif node_type == DRAFT:
             add("Renommer", lambda: self.rename_draft(data, name))
             add("Dupliquer", lambda: self.duplicate_draft(data, name))
+            add("Copier vers un scénario...", lambda: self.copy_draft_to_scenario(data, name))
+            add("Exporter...", lambda: self.export_draft_item(data, name))
 
         if node_type != DRAFT_ROOT:
             add("Supprimer", lambda: self.delete_item(data, name))

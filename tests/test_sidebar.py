@@ -1,6 +1,7 @@
 """Tests de l'arborescence (sidebar), du dialogue de scénario et du routage profil/brouillon
 de la fenêtre principale. Qt tourne en mode "offscreen" : aucune fenêtre ne s'affiche, et
 les dialogues modaux (saisies, confirmations) sont remplacés par des réponses fixes."""
+import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,8 +11,8 @@ import pytest
 # création de la QApplication.
 from PyQt6 import QtWebEngineWidgets  # noqa: F401
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QInputDialog, QLabel,
-                             QMessageBox, QWidget)
+from PyQt6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QInputDialog,
+                             QLabel, QMessageBox, QWidget)
 
 from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME
 from ui import sidebar as sidebar_module
@@ -65,6 +66,27 @@ def answer_inputs(monkeypatch, texts=(), doubles=()):
     texts, doubles = list(texts), list(doubles)
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: (texts.pop(0), True)))
     monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(lambda *a, **k: (doubles.pop(0), True)))
+
+
+def answer_item_choice(monkeypatch, label: str):
+    """Remplace le sélecteur de liste (QInputDialog.getItem) par un choix fixe, validé."""
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: (label, True)))
+
+
+def forbid_item_choice(monkeypatch):
+    """Fait échouer le test si QInputDialog.getItem est appelé (aucune destination ne
+    doit être demandée, ex. import d'un fichier projet)."""
+    def fail(*a, **k):
+        raise AssertionError("QInputDialog.getItem ne devrait pas être appelé ici")
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(fail))
+
+
+def answer_file_dialogs(monkeypatch, open_path=None, save_path=None):
+    """Remplace les sélecteurs de fichier par un chemin fixe, sans ouvrir de fenêtre."""
+    if open_path is not None:
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(open_path), "")))
+    if save_path is not None:
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(save_path), "")))
 
 
 # --- Arborescence ---
@@ -435,3 +457,222 @@ def test_deleting_the_open_draft_returns_to_the_welcome_page(main_window):
 
     assert main_window._current_target is None
     assert main_window.forms_stack.currentIndex() == 0
+
+
+# --- Export / Import (JSON) ---
+
+def test_export_profile_item_writes_a_profile_file(sidebar, db, tmp_path, monkeypatch):
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 1.0}], {"anchor_z": 0.5})
+    sidebar.refresh_tree()
+    path = tmp_path / "export.json"
+    answer_file_dialogs(monkeypatch, save_path=path)
+
+    sidebar.export_profile_item({"type": PROFILE, "id": profile_id}, "PK 0")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["type"] == "profile" and data["name"] == "PK 0" and data["distance"] == 0.0
+
+
+def test_export_draft_item_writes_a_profile_file_without_distance(sidebar, db, tmp_path, monkeypatch):
+    draft_id = db.create_draft("Essai")
+    sidebar.refresh_tree()
+    path = tmp_path / "export.json"
+    answer_file_dialogs(monkeypatch, save_path=path)
+
+    sidebar.export_draft_item({"type": DRAFT, "id": draft_id}, "Essai")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["type"] == "profile" and data["distance"] is None
+
+
+def test_export_scenario_and_project_items_write_matching_types(sidebar, db, tmp_path, monkeypatch):
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    sidebar.refresh_tree()
+
+    scenario_path = tmp_path / "scenario.json"
+    answer_file_dialogs(monkeypatch, save_path=scenario_path)
+    sidebar.export_scenario_item({"type": SCENARIO, "id": scenario_id}, "S")
+    assert json.loads(scenario_path.read_text(encoding="utf-8"))["type"] == "scenario"
+
+    project_path = tmp_path / "project.json"
+    answer_file_dialogs(monkeypatch, save_path=project_path)
+    sidebar.export_project_item({"type": PROJECT, "id": project_id}, "P")
+    assert json.loads(project_path.read_text(encoding="utf-8"))["type"] == "project"
+
+
+def test_import_file_profile_routes_to_the_chosen_scenario(sidebar, db, tmp_path, monkeypatch):
+    other_project = db.create_project("Autre projet")
+    other_scenario = db.create_scenario(other_project, "Source")
+    profile_id = db.create_or_get_profile(other_scenario, "PK 0", 0.0)
+    db.save_profile_state(profile_id, [{"X (m)": 1.0, "Z (m NGF)": 2.0}], {"anchor_z": 1.5})
+    path = tmp_path / "profile.json"
+    db.export_profile_to_file(profile_id, path)
+
+    target_project = db.create_project("Cible")
+    db.create_scenario(target_project, "Destination")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    answer_item_choice(monkeypatch, "Cible › Destination")
+    opened = record(sidebar.profile_selected)
+
+    sidebar.import_file()
+
+    profiles = next(p for p in db.get_all_projects()
+                     if p["name"] == "Cible")["scenarios"][0]["profiles"]
+    assert [p["name"] for p in profiles] == ["PK 0"]
+    assert len(opened) == 1 and opened[0][0] == profiles[0]["id"]
+
+
+def test_import_file_profile_routes_to_draft_zone(sidebar, db, tmp_path, monkeypatch):
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    path = tmp_path / "profile.json"
+    db.export_profile_to_file(profile_id, path)
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    answer_item_choice(monkeypatch, "Draft (brouillons)")
+
+    sidebar.import_file()
+
+    assert [d["name"] for d in db.get_all_drafts()] == ["PK 0"]
+
+
+def test_import_file_scenario_routes_to_the_chosen_project(sidebar, db, tmp_path, monkeypatch):
+    source_project = db.create_project("Source")
+    source_scenario = db.create_scenario(source_project, "Variante")
+    db.create_or_get_profile(source_scenario, "PK 0", 0.0)
+    path = tmp_path / "scenario.json"
+    db.export_scenario_to_file(source_scenario, path)
+
+    db.create_project("Cible")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    answer_item_choice(monkeypatch, "Cible")
+    opened = record(sidebar.scenario_selected)
+
+    sidebar.import_file()
+
+    scenarios = next(p for p in db.get_all_projects() if p["name"] == "Cible")["scenarios"]
+    assert [s["name"] for s in scenarios] == ["Variante"]
+    assert opened and opened[0][0] == scenarios[0]["id"]
+
+
+def test_import_file_project_creates_a_new_project_without_prompting(sidebar, db, tmp_path, monkeypatch):
+    project_id = db.create_project("Rivière")
+    scenario_id = db.create_scenario(project_id, "S")
+    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    path = tmp_path / "project.json"
+    db.export_project_to_file(project_id, path)
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    forbid_item_choice(monkeypatch)  # un projet ne demande jamais de destination
+    opened = record(sidebar.project_selected)
+
+    sidebar.import_file()
+
+    names = sorted(p["name"] for p in db.get_all_projects())
+    assert names == ["Rivière", "Rivière - importé"]
+    assert opened
+
+
+def test_import_profile_into_scenario_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch):
+    draft_id = db.create_draft("Essai")
+    db.save_draft_state(draft_id, [{"X (m)": 3.0, "Z (m NGF)": 4.0}], {"anchor_z": 3.5})
+    path = tmp_path / "profile.json"
+    db.export_draft_to_file(draft_id, path)
+
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    forbid_item_choice(monkeypatch)  # le scénario cible est déjà connu (menu contextuel)
+
+    sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
+    assert [p["name"] for p in profiles] == ["Essai"]
+    assert db.load_profile_state(profiles[0]["id"]) == ([{"X (m)": 3.0, "Z (m NGF)": 4.0}], {"anchor_z": 3.5})
+
+
+def test_import_scenario_into_project_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch):
+    source_scenario = db.create_scenario(db.create_project("Source"), "Variante")
+    db.create_or_get_profile(source_scenario, "PK 0", 0.0)
+    path = tmp_path / "scenario.json"
+    db.export_scenario_to_file(source_scenario, path)
+
+    target_project = db.create_project("Cible")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    forbid_item_choice(monkeypatch)
+
+    sidebar.import_scenario_into_project_item({"type": PROJECT, "id": target_project})
+
+    scenarios = db.get_scenarios(target_project)
+    assert [s["name"] for s in scenarios] == ["Variante"]
+
+
+def test_import_profile_into_drafts_context_menu(sidebar, db, tmp_path, monkeypatch):
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    path = tmp_path / "profile.json"
+    db.export_profile_to_file(profile_id, path)
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    forbid_item_choice(monkeypatch)
+
+    sidebar.import_profile_into_drafts_item()
+
+    assert [d["name"] for d in db.get_all_drafts()] == ["PK 0"]
+
+
+def test_import_wrong_file_type_in_context_menu_warns_and_imports_nothing(sidebar, db, tmp_path, monkeypatch):
+    """Importer un fichier "projet" via le menu contextuel d'un scénario (qui n'attend
+    qu'un fichier "profil") : avertit, ne crée rien."""
+    project_id = db.create_project("Source")
+    path = tmp_path / "project.json"
+    db.export_project_to_file(project_id, path)
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2])))
+
+    sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    assert warnings and "profil" in warnings[0]
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == []
+
+
+# --- Copie interne Draft → Scénario ---
+
+def test_copy_draft_to_scenario_action_creates_an_independent_copy(sidebar, db, monkeypatch):
+    draft_id = db.create_draft("Essai berge")
+    db.save_draft_state(draft_id, [{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    sidebar.refresh_tree()
+    answer_item_choice(monkeypatch, "P › S")
+    opened = record(sidebar.profile_selected)
+
+    sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai berge")
+
+    profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
+    assert [p["name"] for p in profiles] == ["Essai berge"]
+    assert opened and opened[0][0] == profiles[0]["id"]
+    # Le brouillon source reste inchangé dans la zone Draft.
+    assert db.get_all_drafts() == [{"id": draft_id, "name": "Essai berge"}]
+    assert db.load_draft_state(draft_id) == ([{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
+
+
+def test_copy_draft_to_scenario_without_any_scenario_warns(sidebar, db, monkeypatch):
+    draft_id = db.create_draft("Essai")
+    sidebar.refresh_tree()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2])))
+
+    sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai")
+
+    assert warnings == ["Aucun scénario : créez d'abord un projet et un scénario."]
