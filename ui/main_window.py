@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
 
         lbl_welcome_hint = QLabel(
             "Choisissez un projet pour son profil en long,\n"
-            "ou un PK pour éditer son profil en travers."
+            "ou un profil pour éditer son profil en travers."
         )
         lbl_welcome_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_welcome_hint.setStyleSheet(theme.qss(
@@ -151,18 +151,18 @@ class MainWindow(QMainWindow):
         self.update_plot()
 
     def _update_context_bar(self, context):
-        """Affiche "<projet> › PK <nom>" au-dessus des onglets, ou masque le bandeau si
-        aucun profil n'est sélectionné. Les libellés viennent de la saisie utilisateur,
+        """Affiche "<projet> › <nom du profil>" au-dessus des onglets, ou masque le bandeau
+        si aucun profil n'est sélectionné. Les libellés viennent de la saisie utilisateur,
         d'où l'échappement HTML avant de les injecter dans le texte enrichi du QLabel."""
         if not context:
             self.lbl_context.setVisible(False)
             return
 
-        project_name, pk_name = (escape(part) for part in context)
+        project_name, profile_name = (escape(part) for part in context)
         self.lbl_context.setText(
             f'<span style="color:{theme.TEXT_SECONDARY}">{project_name}</span>'
             f'<span style="color:{theme.TEXT_MUTED}"> &rsaquo; </span>'
-            f'<span style="color:{theme.TEXT_PRIMARY}; font-weight:bold">PK {pk_name}</span>'
+            f'<span style="color:{theme.TEXT_PRIMARY}; font-weight:bold">{profile_name}</span>'
         )
         self.lbl_context.setVisible(True)
 
@@ -198,7 +198,8 @@ class MainWindow(QMainWindow):
         self.plot_view.lbl_title.setText("Profil en long du projet")
 
         rows = self.db_manager.get_longitudinal_data(project_id)
-        fig = self.controller.build_longitudinal_figure(rows)
+        hard_points = self.db_manager.get_hard_points(project_id)
+        fig = self.controller.build_longitudinal_figure(rows, hard_points)
         self.plot_view.update_plot(fig)
 
     def save_and_update_plot(self, _=None):

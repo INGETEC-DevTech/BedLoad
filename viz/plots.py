@@ -12,6 +12,7 @@ from core.longitudinal import LongitudinalProfile
 
 EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
+HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
 
 
 def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
@@ -139,9 +140,10 @@ def plot_overlay(
 
 def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
     """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
-    (anchor_z), chacun tracé en fonction du PK. Contrairement aux coupes transversales,
-    les axes ne sont volontairement PAS orthonormés (le PK s'étend typiquement sur des
-    centaines de mètres pour quelques mètres d'altitude)."""
+    (anchor_z), chacun tracé en fonction de la distance au point dur amont. Contrairement
+    aux coupes transversales, les axes ne sont volontairement PAS orthonormés (cette
+    distance s'étend typiquement sur des centaines de mètres pour quelques mètres
+    d'altitude)."""
     fig = go.Figure()
 
     fig.add_trace(
@@ -164,8 +166,32 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
         )
     )
 
+    # Points durs (repères de terrain fixes) : un marqueur ponctuel par point, sans
+    # ligne (ce ne sont pas des courbes), identifié par son propre nom dans la légende
+    # et l'étiquette affichée au-dessus du marqueur. Absents du graphique tant que leurs
+    # coordonnées ne sont pas toutes renseignées (cf. build_longitudinal_profile).
+    for hard_point in (profile.hard_point_upstream, profile.hard_point_downstream):
+        if hard_point is None:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=[hard_point.distance], y=[hard_point.z],
+                mode="markers+text",
+                name=hard_point.name,
+                text=[hard_point.name],
+                textposition="top center",
+                textfont=dict(size=11, color=HARD_POINT_COLOR),
+                marker=dict(
+                    size=13, symbol="diamond", color=HARD_POINT_COLOR,
+                    line=dict(width=1, color="#ffffff"),
+                ),
+            )
+        )
+
     fig = _apply_common_layout(fig, "Profil en long")
-    fig.update_layout(xaxis_title=dict(text="PK", font=dict(size=12, color="#6c757d")))
+    fig.update_layout(xaxis_title=dict(
+        text="Distance au point dur amont (m)", font=dict(size=12, color="#6c757d")
+    ))
     # On annule l'échelle orthonormée héritée de _apply_common_layout : non pertinente ici.
     fig.update_yaxes(scaleanchor=None, scaleratio=None)
 

@@ -3,11 +3,19 @@ from html import escape
 
 from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
                              QInputDialog, QMessageBox, QMenu, QApplication, QStyle,
-                             QStyledItemDelegate)
+                             QStyledItemDelegate, QDialog)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
 from database.db_manager import DatabaseManager
+from ui.dialogs.hard_points_dialog import HardPointsDialog
 from ui import theme
+
+# Bornes/format partagés par toutes les saisies de "distance au point dur amont" (nouveau
+# profil, renommage, duplication) : cohérent avec la plage large déjà utilisée pour les
+# coordonnées de points durs (HardPointsDialog).
+_DISTANCE_MIN = -1_000_000.0
+_DISTANCE_MAX = 1_000_000.0
+_DISTANCE_DECIMALS = 3
 
 
 class _TreeItemDelegate(QStyledItemDelegate):
@@ -178,7 +186,7 @@ class Sidebar(QWidget):
         # Ids déjà vus au moins une fois : un projet absent de cet ensemble est "nouveau"
         # et sera déplié par défaut lors de son premier affichage.
         self._known_project_ids = set()
-        # Libellés (projet, PK) de la sélection courante, pour le bandeau de contexte.
+        # Libellés (projet, profil) de la sélection courante, pour le bandeau de contexte.
         self._context_labels = None
 
         # 1. Contraste : Fond légèrement grisé pour détacher le panneau
@@ -202,7 +210,7 @@ class Sidebar(QWidget):
             QPushButton:pressed { background-color: $PRIMARY_PRESSED; }
         """))
         
-        self.btn_add_profile = QPushButton("+ Nouveau Profil (PK)")
+        self.btn_add_profile = QPushButton("+ Nouveau Profil")
         self.btn_add_profile.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_profile.setStyleSheet(theme.qss("""
             QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
@@ -278,8 +286,17 @@ class Sidebar(QWidget):
 
             for prof in proj["profiles"]:
                 # Création de l'item Profil (Fichier)
-                prof_item = QStandardItem(icon_file, prof["pk_name"])
-                prof_item.setData({"type": "profile", "id": prof["id"]}, Qt.ItemDataRole.UserRole)
+                prof_item = QStandardItem(icon_file, prof["name"])
+                prof_item.setData(
+                    {
+                        "type": "profile",
+                        "id": prof["id"],
+                        "project_id": proj["id"],
+                        "name": prof["name"],
+                        "distance": prof["distance"],
+                    },
+                    Qt.ItemDataRole.UserRole,
+                )
                 prof_item.setEditable(False)
                 proj_item.appendRow(prof_item)
 
@@ -297,12 +314,48 @@ class Sidebar(QWidget):
 
     def add_project(self):
         name, ok = QInputDialog.getText(self, "Nouveau Projet", "Nom du projet :")
-        if ok and name:
-            try:
-                self.db.create_project(name)
-                self.refresh_tree()
-            except ValueError as e:
-                QMessageBox.warning(self, "Erreur", str(e))
+        if not ok or not name:
+            return
+
+        try:
+            project_id = self.db.create_project(name)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
+
+        self.refresh_tree()
+        # Les points durs sont optionnels dès la création : annuler ce dialogue laisse
+        # simplement les deux points vides, éditables ensuite via le menu contextuel du
+        # projet ("Points durs...").
+        self._prompt_hard_points(project_id)
+
+    def _prompt_hard_points(self, project_id: int, upstream: dict = None, downstream: dict = None):
+        """Ouvre le dialogue des points durs amont/aval et enregistre le résultat si
+        l'utilisateur valide."""
+        dialog = HardPointsDialog(self, upstream=upstream, downstream=downstream)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        values = dialog.get_values()
+        self.db.set_hard_points(
+            project_id,
+            values["upstream"]["name"], values["upstream"]["x"], values["upstream"]["z"],
+            values["downstream"]["name"], values["downstream"]["x"], values["downstream"]["z"],
+        )
+
+    def edit_hard_points(self, data: dict):
+        """Édite les points durs d'un projet déjà existant (menu contextuel)."""
+        hard_points = self.db.get_hard_points(data["id"]) or {"upstream": {}, "downstream": {}}
+        self._prompt_hard_points(data["id"], hard_points["upstream"], hard_points["downstream"])
+
+    def _distance_label(self, project_id: int) -> str:
+        """Libellé de la saisie de distance, mentionnant le point dur amont s'il est déjà
+        nommé, pour rappeler à quoi cette distance est relative."""
+        hard_points = self.db.get_hard_points(project_id)
+        upstream_name = hard_points["upstream"]["name"] if hard_points else None
+        if upstream_name:
+            return f"Distance au point dur amont « {upstream_name} » (m) :"
+        return "Distance au point dur amont (m) :"
 
     def add_profile(self):
         selected = self.tree_view.currentIndex()
@@ -318,22 +371,29 @@ class Sidebar(QWidget):
             item = item.parent()
             data = item.data(Qt.ItemDataRole.UserRole)
             
-        name, ok = QInputDialog.getText(self, "Nouveau Profil", "Nom du PK :")
+        name, ok = QInputDialog.getText(self, "Nouveau Profil", "Nom du profil :")
         if not ok or not name:
             return
-
         name = name.strip()
-        try:
-            float(name.replace(',', '.'))
-        except ValueError:
-            QMessageBox.warning(self, "Erreur", "Le nom du PK doit être une valeur numérique (ex : 125.4).")
+        if not name:
             return
 
-        self.db.create_or_get_profile(data["id"], name)
+        distance, ok = QInputDialog.getDouble(
+            self, "Nouveau Profil", self._distance_label(data["id"]),
+            0.0, _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
+        )
+        if not ok:
+            return
+
+        try:
+            self.db.create_or_get_profile(data["id"], name, distance)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
         self.refresh_tree()
 
     def current_context(self):
-        """Libellés (nom du projet, nom du PK) de la sélection courante, ou None si aucun
+        """Libellés (nom du projet, nom du profil) de la sélection courante, ou None si aucun
         profil n'est sélectionné. Alimente le bandeau de contexte de la fenêtre principale,
         qui ne reçoit sinon qu'un identifiant numérique via profile_selected."""
         return self._context_labels
@@ -368,6 +428,7 @@ class Sidebar(QWidget):
         menu = QMenu()
         rename_action = menu.addAction("Renommer") if data["type"] in ("profile", "project") else None
         duplicate_action = menu.addAction("Dupliquer")
+        hard_points_action = menu.addAction("Points durs...") if data["type"] == "project" else None
         delete_action = menu.addAction("Supprimer")
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
 
@@ -383,22 +444,30 @@ class Sidebar(QWidget):
                 self.duplicate_profile(data, item.text())
             else:
                 self.duplicate_project(data, item.text())
+        elif hard_points_action is not None and action == hard_points_action:
+            self.edit_hard_points(data)
 
     def rename_profile(self, data: dict, current_name: str):
-        """Demande un nouveau nom de PK (obligatoirement numérique) et renomme le profil."""
-        new_name, ok = QInputDialog.getText(self, "Renommer le profil", "Nom du PK :", text=current_name)
+        """Demande un nouveau nom (texte libre) et une nouvelle distance au point dur
+        amont, et renomme le profil."""
+        new_name, ok = QInputDialog.getText(
+            self, "Renommer le profil", "Nom du profil :", text=current_name
+        )
         if not ok or not new_name:
             return
-
         new_name = new_name.strip()
-        try:
-            float(new_name.replace(',', '.'))
-        except ValueError:
-            QMessageBox.warning(self, "Erreur", "Le nom du PK doit être une valeur numérique (ex : 125.4).")
+        if not new_name:
+            return
+
+        new_distance, ok = QInputDialog.getDouble(
+            self, "Renommer le profil", self._distance_label(data["project_id"]),
+            data.get("distance", 0.0), _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
+        )
+        if not ok:
             return
 
         try:
-            self.db.rename_profile(data["id"], new_name)
+            self.db.rename_profile(data["id"], new_name, new_distance)
             self.refresh_tree()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
@@ -420,21 +489,24 @@ class Sidebar(QWidget):
             QMessageBox.warning(self, "Erreur", str(e))
 
     def duplicate_profile(self, data: dict, current_name: str):
-        """Demande un nouveau nom de PK (obligatoirement numérique) et duplique le profil
-        dans le même projet, avec ses données existantes."""
-        new_name, ok = QInputDialog.getText(self, "Dupliquer le profil", "Nom du PK :")
+        """Demande un nouveau nom (texte libre) et une nouvelle distance au point dur
+        amont, et duplique le profil dans le même projet, avec ses données existantes."""
+        new_name, ok = QInputDialog.getText(self, "Dupliquer le profil", "Nom du profil :")
         if not ok or not new_name:
             return
-
         new_name = new_name.strip()
-        try:
-            float(new_name.replace(',', '.'))
-        except ValueError:
-            QMessageBox.warning(self, "Erreur", "Le nom du PK doit être une valeur numérique (ex : 125.4).")
+        if not new_name:
+            return
+
+        new_distance, ok = QInputDialog.getDouble(
+            self, "Dupliquer le profil", self._distance_label(data["project_id"]),
+            data.get("distance", 0.0), _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
+        )
+        if not ok:
             return
 
         try:
-            new_profile_id = self.db.duplicate_profile(data["id"], new_name)
+            new_profile_id = self.db.duplicate_profile(data["id"], new_name, new_distance)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
@@ -444,7 +516,7 @@ class Sidebar(QWidget):
 
     def duplicate_project(self, data: dict, current_name: str):
         """Demande un nom pour le nouveau projet et duplique le projet source ainsi que
-        tous ses profils (PK)."""
+        tous ses profils (ainsi que ses points durs)."""
         new_name, ok = QInputDialog.getText(
             self, "Dupliquer le projet", "Nom du projet :", text=f"{current_name} - copie"
         )
@@ -477,7 +549,7 @@ class Sidebar(QWidget):
         if data["type"] == "project":
             msg += (
                 f'<br><br><b style="color:{theme.DANGER}">Attention :</b> cela supprimera '
-                "également tous les profils (PK) associés de la base de données."
+                "également tous les profils associés de la base de données."
             )
 
         # La suppression est irréversible : le bouton par défaut reste "Non", pour qu'une

@@ -39,12 +39,15 @@ class ProfileController:
         return vars(ProjectParameters())
 
     def build_longitudinal_figure(
-        self, rows: List[Tuple[float, Optional[float], Optional[float]]]
+        self, rows: List[Tuple[float, Optional[float], Optional[float]]],
+        hard_points: Optional[Dict[str, Dict[str, Optional[float]]]] = None,
     ) -> Optional[go.Figure]:
         """Construit le profil en long d'un projet à partir des triplets
-        (pk, min_z_existant, anchor_z_projet) renvoyés par DatabaseManager.get_longitudinal_data."""
-        profile = build_longitudinal_profile(rows)
-        if not profile.pk_existing and not profile.pk_project:
+        (pk, min_z_existant, anchor_z_projet) renvoyés par DatabaseManager.get_longitudinal_data,
+        et des points durs amont/aval (format DatabaseManager.get_hard_points)."""
+        profile = build_longitudinal_profile(rows, hard_points)
+        if (not profile.pk_existing and not profile.pk_project
+                and profile.hard_point_upstream is None and profile.hard_point_downstream is None):
             return None
         return plot_longitudinal_profile(profile)
 
