@@ -69,6 +69,8 @@ class ProjectProfileForm(QWidget):
         box_layout = QVBoxLayout(grp)
         box_layout.setSpacing(theme.SPACE_SM)
 
+        box_layout.addWidget(self._make_section_label("Banquettes"))
+        box_layout.addWidget(self._make_separator())
         form_banquette = QFormLayout()
         for label, widget in banquette_rows:
             form_banquette.addRow(label, widget)
