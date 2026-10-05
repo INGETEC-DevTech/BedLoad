@@ -7,7 +7,8 @@ from ui import theme
 
 class HardPointsDialog(QDialog):
     """Dialogue de saisie/édition des deux points durs (amont/aval) d'un projet : chacun
-    est un repère de terrain fixe, avec un nom et des coordonnées (X, Z). La distance 0
+    est un repère de terrain fixe, avec un nom et des coordonnées (PK, Z ; le PK est
+    stocké sous la clé "x", seul le libellé affiché change). La distance 0
     des profils du projet correspond, par convention, à la position du point dur amont
     (rien ici ne calcule ou ne recale automatiquement cette distance à partir des
     coordonnées : ce sont deux informations indépendantes)."""
@@ -61,7 +62,7 @@ class HardPointsDialog(QDialog):
         z_spin.setValue(values.get("z") or 0.0)
 
         form.addRow("Nom :", name_edit)
-        form.addRow("X (m) :", x_spin)
+        form.addRow("PK (m) :", x_spin)
         form.addRow("Z (m NGF) :", z_spin)
 
         layout.addWidget(grp)

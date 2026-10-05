@@ -1,10 +1,11 @@
 # ui/forms/project_form.py
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox,
                                 QGroupBox, QScrollArea, QCheckBox, QPushButton,
-                                QLabel, QInputDialog, QMessageBox, QFrame, QSizePolicy)
+                                QLabel, QDialog, QMessageBox, QFrame, QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt
 
 from ui import theme
+from ui.dialogs.point_picker_dialog import PointPickerDialog
 
 class ProjectProfileForm(QWidget):
     data_changed = pyqtSignal(dict)
@@ -292,26 +293,33 @@ class ProjectProfileForm(QWidget):
         choisir directement l'un d'eux comme point d'ancrage."""
         self._existing_points = existing_data
 
-    def _pick_anchor_point(self):
+    def _choose_existing_point(self, title: str):
+        """Fait choisir un point du profil existant dans une liste défilante (les points
+        peuvent être nombreux). Retourne (x, z), ou None si aucun point n'est disponible
+        ou si l'utilisateur annule."""
         if not self._existing_points:
             QMessageBox.information(
                 self, "Aucun point disponible",
                 "Renseignez d'abord des points dans l'onglet Profil existant."
             )
-            return
+            return None
 
         points = sorted(
             (pt["X (m)"], pt["Z (m NGF)"]) for pt in self._existing_points
         )
         items = [f"X = {x:.2f} m  |  Z = {z:.2f} m NGF" for x, z in points]
 
-        item, ok = QInputDialog.getItem(
-            self, "Choisir un point d'ancrage", "Point (X, Z) :", items, editable=False
-        )
-        if not ok or not item:
-            return
+        dialog = PointPickerDialog(self, title, "Point (X, Z) :", items)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        index = dialog.selected_index()
+        return points[index] if index is not None else None
 
-        x, z = points[items.index(item)]
+    def _pick_anchor_point(self):
+        point = self._choose_existing_point("Choisir un point d'ancrage")
+        if point is None:
+            return
+        x, z = point
 
         # On bloque temporairement les signaux des deux spinboxes pour n'émettre
         # data_changed qu'une seule fois à la fin (même pattern que paste_from_clipboard).
@@ -352,24 +360,12 @@ class ProjectProfileForm(QWidget):
         return hdb_x + floodplain_width if floodplain_width > 0 else hdb_x
 
     def _pick_connect_point(self, side: str):
-        if not self._existing_points:
-            QMessageBox.information(
-                self, "Aucun point disponible",
-                "Renseignez d'abord des points dans l'onglet Profil existant."
-            )
-            return
-
-        points = sorted(
-            (pt["X (m)"], pt["Z (m NGF)"]) for pt in self._existing_points
-        )
-        items = [f"X = {x:.2f} m  |  Z = {z:.2f} m NGF" for x, z in points]
-
         title = "Choisir le point de raccord gauche" if side == 'left' else "Choisir le point de raccord droit"
-        item, ok = QInputDialog.getItem(self, title, "Point (X, Z) :", items, editable=False)
-        if not ok or not item:
+        point = self._choose_existing_point(title)
+        if point is None:
             return
 
-        x, z = points[items.index(item)]
+        x, z = point
         bank_top_x = self._bank_top_x(side)
 
         if side == 'left':

@@ -676,3 +676,97 @@ def test_copy_draft_to_scenario_without_any_scenario_warns(sidebar, db, monkeypa
     sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai")
 
     assert warnings == ["Aucun scénario : créez d'abord un projet et un scénario."]
+
+
+# --- Archives ---
+
+def test_archive_action_removes_the_project_from_the_tree_and_counts_it(sidebar, db):
+    project_id = db.create_project("P")
+    db.create_scenario(project_id, "S")
+    db.create_project("Autre")
+    sidebar.refresh_tree()
+    assert sidebar.btn_archives.text() == "Archives"
+
+    sidebar.archive_project_item({"type": PROJECT, "id": project_id})
+
+    assert [name for _, name, _ in tree_snapshot(sidebar)] == ["Autre", "Draft"]
+    assert sidebar.btn_archives.text() == "Archives (1)"
+    assert [p["id"] for p in db.get_archived_projects()] == [project_id]
+
+
+def test_archiving_the_open_project_clears_the_selection(sidebar, db):
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    sidebar.refresh_tree()
+    click(sidebar, (PROFILE, profile_id))
+    cleared = record(sidebar.selection_cleared)
+
+    sidebar.archive_project_item({"type": PROJECT, "id": project_id})
+
+    assert cleared == [()]
+    assert sidebar.current_context() is None
+
+
+def test_archived_projects_are_not_offered_as_import_or_copy_destinations(sidebar, db):
+    kept = db.create_project("Actif")
+    db.create_scenario(kept, "S")
+    archived = db.create_project("Rangé")
+    db.create_scenario(archived, "S")
+    db.set_project_archived(archived, True)
+
+    assert sidebar._project_choices() == [("Actif", kept)]
+    assert [label for label, _ in sidebar._scenario_choices()] == ["Actif › S"]
+
+
+def test_archives_dialog_restores_and_the_sidebar_selects_the_project(sidebar, db, monkeypatch):
+    from ui.dialogs.archives_dialog import ArchivesDialog
+    project_id = db.create_project("P")
+    db.create_scenario(project_id, "S")
+    db.set_project_archived(project_id, True)
+    sidebar.refresh_tree()
+    opened = record(sidebar.project_selected)
+
+    def fake_exec(self):
+        assert self.list_widget.count() == 1
+        self.restore_selected()
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(ArchivesDialog, "exec", fake_exec)
+
+    sidebar.open_archives()
+
+    assert [name for _, name, _ in tree_snapshot(sidebar)] == ["P", "Draft"]
+    assert sidebar.btn_archives.text() == "Archives"
+    assert opened == [(project_id,)]
+
+
+def test_archives_dialog_lists_contents_and_disables_actions_when_empty(qapp, db):
+    from ui.dialogs.archives_dialog import ArchivesDialog
+    empty = ArchivesDialog(db)
+    assert empty.list_widget.count() == 0
+    assert not empty.btn_restore.isEnabled() and not empty.btn_delete.isEnabled()
+
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.set_project_archived(project_id, True)
+    dialog = ArchivesDialog(db)
+
+    assert dialog.list_widget.item(0).text() == "P  —  1 scénario, 1 profil"
+    assert dialog.btn_restore.isEnabled() and dialog.btn_delete.isEnabled()
+
+
+def test_archives_dialog_deletes_only_after_confirmation(qapp, db, monkeypatch):
+    from ui.dialogs.archives_dialog import ArchivesDialog
+    project_id = db.create_project("P")
+    db.set_project_archived(project_id, True)
+    dialog = ArchivesDialog(db)
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    dialog.delete_selected()
+    assert [p["id"] for p in db.get_archived_projects()] == [project_id]
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    dialog.delete_selected()
+    assert db.get_archived_projects() == []
+    assert dialog.list_widget.count() == 0

@@ -89,7 +89,8 @@ class DatabaseManager:
 
             # Table des projets, avec ses deux points durs (amont/aval) : un seul jeu de
             # coordonnées par projet, saisi/édité depuis la sidebar (création de projet,
-            # ou menu contextuel "Points durs du projet").
+            # ou menu contextuel "Points durs du projet"). `archived` (0/1) range un projet
+            # hors de l'arborescence de la sidebar sans rien supprimer (cf. menu Archives).
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +101,7 @@ class DatabaseManager:
                     hard_point_downstream_name TEXT,
                     hard_point_downstream_x REAL,
                     hard_point_downstream_z REAL,
+                    archived INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -165,7 +167,8 @@ class DatabaseManager:
         """Adapte une base créée par une version antérieure de l'app, où :
         - `projects` n'avait pas encore de points durs (colonnes ajoutées ici via
           ALTER TABLE, nullables : une base existante n'a simplement pas encore de
-          points durs renseignés, à saisir/éditer depuis la sidebar) ;
+          points durs renseignés, à saisir/éditer depuis la sidebar), ni d'indicateur
+          `archived` (même principe : colonne ajoutée, tous les projets restent actifs) ;
         - `profiles` identifiait chaque profil par un unique champ `pk_name`, à la fois
           nom affiché ET valeur de tri/position sur le profil en long. On le remplace
           par `name` (texte libre) et `distance` (numérique), chacun initialisé à
@@ -182,6 +185,10 @@ class DatabaseManager:
             if column not in project_columns:
                 col_type = "TEXT" if column.endswith("_name") else "REAL"
                 cursor.execute(f"ALTER TABLE projects ADD COLUMN {column} {col_type}")
+
+        # --- projects : ajoute l'indicateur d'archivage (les projets existants restent actifs) ---
+        if "archived" not in project_columns:
+            cursor.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
         # --- profiles : remplace pk_name par name + distance. SQLite ne sait pas retirer
         # une contrainte UNIQUE par ALTER TABLE, donc on reconstruit la table (motif
@@ -308,12 +315,13 @@ class DatabaseManager:
     # --- GESTION DES PROJETS ---
 
     def get_all_projects(self) -> List[Dict]:
-        """Récupère l'arborescence complète Projet → Scénarios → Profils. Les projets sont
+        """Récupère l'arborescence complète Projet → Scénarios → Profils des projets actifs
+        (les projets archivés en sont exclus, cf. get_archived_projects). Les projets sont
         triés par nom, les scénarios par ordre de création (le scénario initial reste en
         tête), les profils de chaque scénario par distance croissante au point dur amont."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name FROM projects ORDER BY name")
+            cursor.execute("SELECT id, name FROM projects WHERE archived = 0 ORDER BY name")
             projects = [dict(row) for row in cursor.fetchall()]
 
             for project in projects:
@@ -333,6 +341,41 @@ class DatabaseManager:
 
             return projects
 
+    def get_archived_projects(self) -> List[Dict]:
+        """Projets archivés, triés par nom : {id, name, scenario_count, profile_count}.
+        Les décomptes permettent à la fenêtre Archives de décrire ce que contient chaque
+        projet sans charger toute son arborescence."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """SELECT p.id, p.name,
+                          (SELECT COUNT(*) FROM scenarios s WHERE s.project_id = p.id) AS scenario_count,
+                          (SELECT COUNT(*) FROM profiles pr JOIN scenarios s ON pr.scenario_id = s.id
+                            WHERE s.project_id = p.id) AS profile_count
+                   FROM projects p WHERE p.archived = 1 ORDER BY p.name"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_project_archived(self, project_id: int, archived: bool) -> None:
+        """Archive un projet (il disparaît de l'arborescence, rien n'est supprimé) ou le
+        restaure. Son nom reste réservé : l'unicité des noms de projet porte aussi sur les
+        projets archivés."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE projects SET archived = ? WHERE id = ?", (1 if archived else 0, project_id)
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Le projet (ID {project_id}) est introuvable.")
+            conn.commit()
+
+    @staticmethod
+    def _project_exists_message(conn: sqlite3.Connection, name: str) -> str:
+        """Message d'erreur pour un nom de projet déjà pris, précisant s'il l'est par un
+        projet archivé (invisible dans l'arborescence, donc sinon incompréhensible)."""
+        row = conn.execute("SELECT archived FROM projects WHERE name = ?", (name,)).fetchone()
+        if row is not None and row["archived"]:
+            return f"Le projet '{name}' existe déjà (dans les archives)."
+        return f"Le projet '{name}' existe déjà."
+
     def create_project(self, name: str) -> int:
         """Crée un nouveau projet (sans scénario) et retourne son ID. Les points durs sont
         laissés vides (NULL) : à saisir ensuite via set_hard_points."""
@@ -343,7 +386,7 @@ class DatabaseManager:
                 conn.commit()
                 return cursor.lastrowid
             except sqlite3.IntegrityError:
-                raise ValueError(f"Le projet '{name}' existe déjà.")
+                raise ValueError(self._project_exists_message(conn, name))
 
     def rename_project(self, project_id: int, new_name: str) -> None:
         """Renomme un projet existant."""
@@ -356,7 +399,7 @@ class DatabaseManager:
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
-                raise ValueError(f"Le projet '{new_name}' existe déjà.")
+                raise ValueError(self._project_exists_message(conn, new_name))
 
     def get_hard_points(self, project_id: int) -> Optional[Dict[str, Dict[str, Optional[float]]]]:
         """Retourne les points durs amont/aval d'un projet : {"upstream": {"name","x","z"},
@@ -418,7 +461,7 @@ class DatabaseManager:
                     (new_name, project_id),
                 )
             except sqlite3.IntegrityError:
-                raise ValueError(f"Le projet '{new_name}' existe déjà.")
+                raise ValueError(self._project_exists_message(conn, new_name))
             new_project_id = cursor.lastrowid
 
             scenarios = cursor.execute(

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
 from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME
+from ui.dialogs.archives_dialog import ArchivesDialog
 from ui.dialogs.hard_points_dialog import HardPointsDialog
 from ui.dialogs.scenario_dialog import ScenarioDialog
 from ui import theme
@@ -31,6 +32,7 @@ _EXPANDABLE_TYPES = (PROJECT, SCENARIO, DRAFT_ROOT)
 # Nœuds qui ouvrent le formulaire complet (profil existant / projet / hydraulique).
 _EDITABLE_TYPES = (PROFILE, DRAFT)
 _DRAFT_ZONE_LABEL = "Draft"
+_ARCHIVES_LABEL = "Archives"
 
 # Valeur sentinelle choisie dans le sélecteur de destination d'un import/copie de profil
 # (cf. _prompt_scenario_or_draft), pour la distinguer d'un id de scénario (entier).
@@ -320,10 +322,19 @@ class Sidebar(QWidget):
         )
         self.btn_import.setStyleSheet(secondary_qss)
 
+        # Le nombre de projets archivés est ajouté au libellé par refresh_tree().
+        self.btn_archives = QPushButton(_ARCHIVES_LABEL)
+        self.btn_archives.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_archives.setToolTip(
+            "Projets archivés : rangés hors de cette liste, à restaurer pour les rouvrir."
+        )
+        self.btn_archives.setStyleSheet(secondary_qss)
+
         self.main_layout.addWidget(self.btn_add_project)
         self.main_layout.addWidget(self.btn_add_scenario)
         self.main_layout.addWidget(self.btn_add_profile)
         self.main_layout.addWidget(self.btn_import)
+        self.main_layout.addWidget(self.btn_archives)
 
         # 3. Arborescence épurée
         self.tree_view = _ProjectTreeView()
@@ -355,6 +366,7 @@ class Sidebar(QWidget):
         self.btn_add_scenario.clicked.connect(self.add_scenario)
         self.btn_add_profile.clicked.connect(self.add_profile)
         self.btn_import.clicked.connect(self.import_file)
+        self.btn_archives.clicked.connect(self.open_archives)
         self.tree_view.clicked.connect(self.on_item_clicked)
 
         self.refresh_tree()
@@ -455,6 +467,9 @@ class Sidebar(QWidget):
                 icon_file, draft["name"], {"type": DRAFT, "id": draft["id"], "name": draft["name"]}
             ))
         self.model.appendRow(draft_root)
+
+        archived_count = len(self.db.get_archived_projects())
+        self.btn_archives.setText(f"{_ARCHIVES_LABEL} ({archived_count})" if archived_count else _ARCHIVES_LABEL)
 
         # Restaure l'état plié/déplié : un nœud jamais vu jusqu'ici est déplié par défaut
         # pour ne pas donner l'impression qu'il est vide.
@@ -619,6 +634,27 @@ class Sidebar(QWidget):
             self.refresh_tree()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+
+    def archive_project_item(self, data: dict):
+        """Range le projet dans les Archives : il quitte l'arborescence, sans rien perdre
+        (réversible depuis la fenêtre Archives, donc sans confirmation). Si l'élément ouvert
+        en faisait partie, refresh_tree() lève la sélection (selection_cleared)."""
+        try:
+            self.db.set_project_archived(data["id"], True)
+        except ValueError as e:
+            QMessageBox.warning(self, "Erreur", str(e))
+            return
+        self.refresh_tree()
+
+    def open_archives(self):
+        """Ouvre la fenêtre Archives (restauration / suppression définitive). Elle agit
+        directement sur la base : l'arbre est donc rafraîchi à sa fermeture quoi qu'il
+        arrive, et le dernier projet restauré est mis en avant."""
+        dialog = ArchivesDialog(self.db, self)
+        dialog.exec()
+        self.refresh_tree()
+        if dialog.restored_ids:
+            self._select((PROJECT, dialog.restored_ids[-1]))
 
     # --- Scénarios ---
 
@@ -1023,6 +1059,7 @@ class Sidebar(QWidget):
             add("Dupliquer", lambda: self.duplicate_project(data, name))
             add("Points durs...", lambda: self.edit_hard_points(data))
             add("Exporter...", lambda: self.export_project_item(data, name))
+            add("Archiver", lambda: self.archive_project_item(data))
         elif node_type == SCENARIO:
             add("Nouveau profil...", lambda: self.add_profile_to_scenario(data["id"], data["project_id"]))
             add("Importer un profil...", lambda: self.import_profile_into_scenario_item(data))

@@ -732,3 +732,115 @@ def test_fresh_database_schema_has_expected_tables(tmp_path):
     assert {"projects", "scenarios", "profiles", "drafts"} <= tables
     profile_columns = {r["name"] for r in raw_rows(db, "PRAGMA table_info(profiles)")}
     assert "scenario_id" in profile_columns and "project_id" not in profile_columns
+
+
+# --- Archivage des projets ---
+
+def test_archived_project_leaves_the_tree_and_is_listed_in_archives(tmp_path):
+    db = make_db(tmp_path)
+    kept = db.create_project("A garder")
+    archived = db.create_project("A ranger")
+    scenario_id = db.create_scenario(archived, "S")
+    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.create_or_get_profile(scenario_id, "PK 100", 100.0)
+    db.create_scenario(archived, "S2")
+
+    db.set_project_archived(archived, True)
+
+    assert [p["id"] for p in db.get_all_projects()] == [kept]
+    assert db.get_archived_projects() == [
+        {"id": archived, "name": "A ranger", "scenario_count": 2, "profile_count": 2}
+    ]
+
+
+def test_restoring_an_archived_project_gives_back_its_full_content(tmp_path):
+    db = make_db(tmp_path)
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
+    before = db.get_all_projects()
+
+    db.set_project_archived(project_id, True)
+    db.set_project_archived(project_id, False)
+
+    assert db.get_all_projects() == before
+    assert db.get_archived_projects() == []
+    assert db.load_profile_state(profile_id) == ([{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
+
+
+def test_set_project_archived_rejects_an_unknown_project(tmp_path):
+    db = make_db(tmp_path)
+
+    with pytest.raises(ValueError, match="introuvable"):
+        db.set_project_archived(999, True)
+
+
+def test_archived_project_keeps_its_name_reserved_and_the_error_says_so(tmp_path):
+    db = make_db(tmp_path)
+    archived = db.create_project("Rivière")
+    other = db.create_project("Autre")
+    db.set_project_archived(archived, True)
+
+    with pytest.raises(ValueError, match="dans les archives"):
+        db.create_project("Rivière")
+    with pytest.raises(ValueError, match="dans les archives"):
+        db.rename_project(other, "Rivière")
+    with pytest.raises(ValueError, match="dans les archives"):
+        db.duplicate_project(other, "Rivière")
+    # Un doublon avec un projet actif garde son message habituel.
+    with pytest.raises(ValueError) as excinfo:
+        db.create_project("Autre")
+    assert str(excinfo.value) == "Le projet 'Autre' existe déjà."
+
+
+def test_import_project_renames_on_collision_with_an_archived_project(tmp_path):
+    db = make_db(tmp_path)
+    archived = db.create_project("Rivière")
+    db.set_project_archived(archived, True)
+
+    new_id = db.import_project({"type": "project", "version": 1, "name": "Rivière", "scenarios": []})
+
+    assert [p["name"] for p in db.get_all_projects()] == ["Rivière - importé"]
+    assert new_id != archived
+
+
+def test_deleting_an_archived_project_removes_all_its_content(tmp_path):
+    db = make_db(tmp_path)
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.set_project_archived(project_id, True)
+
+    db.delete_project(project_id)
+
+    assert db.get_archived_projects() == []
+    assert raw_rows(db, "SELECT id FROM scenarios") == []
+    assert raw_rows(db, "SELECT id FROM profiles") == []
+
+
+def test_migration_adds_archived_column_and_keeps_every_project_active(tmp_path):
+    db_path = tmp_path / "pre_archive.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+            hard_point_upstream_name TEXT, hard_point_upstream_x REAL, hard_point_upstream_z REAL,
+            hard_point_downstream_name TEXT, hard_point_downstream_x REAL, hard_point_downstream_z REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO projects (id, name, hard_point_upstream_name, hard_point_upstream_x, hard_point_upstream_z)
+            VALUES (3, 'Ancien', 'Seuil', 12.5, 101.25), (8, 'Autre', NULL, NULL, NULL);
+    """)
+    conn.commit()
+    conn.close()
+
+    db = DatabaseManager(db_path=db_path)
+
+    assert [(p["id"], p["name"]) for p in db.get_all_projects()] == [(3, "Ancien"), (8, "Autre")]
+    assert db.get_archived_projects() == []
+    assert db.get_hard_points(3)["upstream"] == {"name": "Seuil", "x": 12.5, "z": 101.25}
+    # Idempotent : rouvrir la base ne rajoute pas la colonne une seconde fois.
+    DatabaseManager(db_path=db_path)
+    columns = [r["name"] for r in raw_rows(db, "PRAGMA table_info(projects)")]
+    assert columns.count("archived") == 1
