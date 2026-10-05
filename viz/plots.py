@@ -5,6 +5,8 @@ Ces fonctions ne dépendent pas de Streamlit : elles retournent un objet
 plotly.graph_objects.Figure, que la couche UI se charge d'afficher.
 """
 
+from typing import List, Optional, Tuple
+
 import plotly.graph_objects as go
 
 from core.models import CrossSection
@@ -13,6 +15,7 @@ from core.longitudinal import LongitudinalProfile
 EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
 HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
+CALC_BOUND_COLOR = "#6c757d" # gris : limites du lit de calcul hydraulique
 
 
 def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
@@ -40,12 +43,42 @@ def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
     return fig
 
 
+def _add_water(fig: go.Figure, water_level: Optional[float],
+               water_intervals: Optional[List[Tuple[float, float]]],
+               calc_bounds: Optional[Tuple[float, float]]) -> None:
+    """Ligne d'eau : un trait par lit mouillé (interrompu là où le terrain émerge, au lieu
+    d'un trait continu qui traverserait un merlon ou une berge entre deux lits), en une
+    seule trace (segments séparés par None) pour une seule entrée de légende. Les limites
+    du lit de calcul, si définies, sont tracées en tirets verticaux."""
+    if water_level is not None and water_intervals:
+        xs, ys = [], []
+        for x_left, x_right in water_intervals:
+            if xs:
+                xs.append(None)
+                ys.append(None)
+            xs += [x_left, x_right]
+            ys += [water_level, water_level]
+        fig.add_trace(
+            go.Scatter(
+                x=xs, y=ys,
+                mode="lines",
+                name="Ligne d'eau",
+                line=dict(color="blue", width=2),
+                connectgaps=False,
+            )
+        )
+
+    if calc_bounds is not None:
+        for x in calc_bounds:
+            fig.add_vline(x=x, line=dict(color=CALC_BOUND_COLOR, width=1, dash="dash"))
+
+
 def plot_single_profile(
-    section: CrossSection, 
+    section: CrossSection,
     color: str = PROJECT_COLOR,
     water_level: float = None,
-    water_x_left: float = None,
-    water_x_right: float = None
+    water_intervals: Optional[List[Tuple[float, float]]] = None,
+    calc_bounds: Optional[Tuple[float, float]] = None,
 ) -> go.Figure:
     """Graphique d'un seul profil (existant seul, ou projet seul) avec ligne d'eau optionnelle."""
     xs, zs = section.to_arrays()
@@ -62,18 +95,8 @@ def plot_single_profile(
         )
     )
     
-    # Trace de la ligne d'eau (uniquement si les paramètres sont fournis)
-    if water_level is not None and water_x_left is not None and water_x_right is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=[water_x_left, water_x_right],
-                y=[water_level, water_level],
-                mode="lines",
-                name="Ligne d'eau",
-                line=dict(color="blue", width=2),
-            )
-        )
-        
+    _add_water(fig, water_level, water_intervals, calc_bounds)
+
     fig = _apply_common_layout(fig, section.name)
         
     # On applique la même logique de cadre strict (+ 1 mètre de marge)
@@ -87,8 +110,8 @@ def plot_overlay(
     existing: CrossSection, 
     project: CrossSection,
     water_level: float = None,
-    water_x_left: float = None,
-    water_x_right: float = None
+    water_intervals: Optional[List[Tuple[float, float]]] = None,
+    calc_bounds: Optional[Tuple[float, float]] = None,
 ) -> go.Figure:
     """Graphique de comparaison : les deux profils superposés, avec ligne d'eau optionnelle."""
     xs_e, zs_e = existing.to_arrays()
@@ -117,17 +140,7 @@ def plot_overlay(
         )
     )
 
-    # Trace de la ligne d'eau (si paramètres fournis)
-    if water_level is not None and water_x_left is not None and water_x_right is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=[water_x_left, water_x_right],
-                y=[water_level, water_level],
-                mode="lines",
-                name="Ligne d'eau",
-                line=dict(color="blue", width=2),
-            )
-        )
+    _add_water(fig, water_level, water_intervals, calc_bounds)
 
     fig = _apply_common_layout(fig, f"{existing.name} vs {project.name}")
     

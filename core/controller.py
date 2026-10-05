@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
-from core.hydraulics import resolve_hydraulic_result
+from core.hydraulics import clip_to_bounds, resolve_hydraulic_result
 from core.longitudinal import build_longitudinal_profile
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 from ui import theme
@@ -82,12 +82,17 @@ class ProfileController:
         show_overlay: bool,
     ) -> Optional[go.Figure]:
         hydro_source = hydro_data.get('hydro_source', 'project')
+        bounds = self._calc_bounds(hydro_data)
 
         if hydro_source == 'existing':
             section = self._to_cross_section(existing_data, name="Existant")
             if section is None:
                 return None
-            z_ref = min(pt.z for pt in section.points)
+            # Tirant d'eau mesuré depuis le fond du lit de calcul (le point le plus bas
+            # entre ses limites), pas depuis le point le plus bas de tout le profil, qui
+            # peut se trouver dans un autre lit.
+            bed_points, _, _ = clip_to_bounds(section.points, bounds)
+            z_ref = min(pt.z for pt in (bed_points or section.points))
             color = EXISTING_COLOR
         else:
             params = self._to_project_parameters(project_data)
@@ -104,7 +109,8 @@ class ProfileController:
         q_target = hydro_data.get('q_target', 15.0)
         h_eau = hydro_data.get('h_eau', 0.5)
 
-        res = resolve_hydraulic_result(section, calc_mode, q_target, h_eau, z_ref, slope, ks)
+        res = resolve_hydraulic_result(section, calc_mode, q_target, h_eau, z_ref, slope, ks, bounds)
+        water = dict(water_level=res["water_z"], water_intervals=res["wet_intervals"], calc_bounds=bounds)
 
         # --- Génération de la figure ---
         if show_overlay:
@@ -114,21 +120,12 @@ class ProfileController:
             if hydro_source == 'existing':
                 other_params = self._to_project_parameters(project_data)
                 other_section = build_project_cross_section(other_params, name="Projet")
-                fig = plot_overlay(
-                    section, other_section,
-                    water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
-                )
+                fig = plot_overlay(section, other_section, **water)
             else:
                 other_section = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
-                fig = plot_overlay(
-                    other_section, section,
-                    water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
-                )
+                fig = plot_overlay(other_section, section, **water)
         else:
-            fig = plot_single_profile(
-                section, color=color,
-                water_level=res["water_z"], water_x_left=res["x_left"], water_x_right=res["x_right"]
-            )
+            fig = plot_single_profile(section, color=color, **water)
 
         # --- Incrustation des résultats ---
         if res["S"] > 0:
@@ -162,6 +159,10 @@ class ProfileController:
                 f'<span style="color:{theme.TEXT_PRIMARY}"><b>Résultats hydrauliques</b></span><br><br>'
                 f"{q_line}<br>{v_line}<br>{s_line}<br>{h_line}"
             )
+            if bounds is not None:
+                texte_resultats += "<br>" + discreet_line(
+                    "Lit de calcul", f"X = {bounds[0]:.2f} → {bounds[1]:.2f} m"
+                )
 
             fig.add_annotation(
                 text=texte_resultats, align="left", showarrow=False,
@@ -171,6 +172,21 @@ class ProfileController:
             )
 
         return fig
+
+    @staticmethod
+    def _calc_bounds(hydro_data: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        """Limites (X gauche, X droite) du lit de calcul hydraulique, ou None si l'option
+        n'est pas activée. Lève ValueError si elles sont incohérentes : MainWindow affiche
+        alors le message à la place du graphique."""
+        if not hydro_data.get('hydro_bounds_enabled'):
+            return None
+        x_left = float(hydro_data.get('hydro_x_left', 0.0))
+        x_right = float(hydro_data.get('hydro_x_right', 0.0))
+        if not x_left < x_right:
+            raise ValueError(
+                "Lit de calcul : le X gauche doit être strictement inférieur au X droite."
+            )
+        return x_left, x_right
 
     def _to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:
         points = dataframe_to_points(pd.DataFrame(raw_data))

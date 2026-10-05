@@ -9,6 +9,7 @@ from ui.dialogs.point_picker_dialog import PointPickerDialog
 
 class ProjectProfileForm(QWidget):
     data_changed = pyqtSignal(dict)
+    export_excel_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -250,6 +251,15 @@ class ProjectProfileForm(QWidget):
         row_overlay.addWidget(self.chk_overlay)
         row_overlay.addStretch()
         layout.addLayout(row_overlay)
+
+        # Export Excel : le classeur est écrit par MainWindow, qui connaît le profil ouvert
+        # (noms du projet, du scénario et du profil, repris dans le fichier).
+        self.btn_export_excel = QPushButton("Exporter le profil projet (Excel)...")
+        self.btn_export_excel.setToolTip(
+            "Points du profil projet (X, Z, nom du point) et paramètres de géométrie, dans un fichier .xlsx."
+        )
+        self.btn_export_excel.clicked.connect(self.export_excel_requested.emit)
+        layout.addWidget(self.btn_export_excel)
 
         # Sans ce stretch final, le QVBoxLayout distribue l'espace restant du QScrollArea
         # en étirant chaque QGroupBox au lieu de le laisser vide en bas.

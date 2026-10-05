@@ -389,9 +389,11 @@ class _FakePlotView(QWidget):
         super().__init__(parent)
         self.lbl_title = QLabel()
         self.figures = []
+        self.view_keys = []
 
-    def update_plot(self, fig, error_message=None):
+    def update_plot(self, fig, error_message=None, view_key=None):
         self.figures.append((fig, error_message))
+        self.view_keys.append(view_key)
 
 
 @pytest.fixture
@@ -431,6 +433,62 @@ def test_editing_a_draft_never_touches_the_profile_with_the_same_id(main_window)
     assert main_window._current_target == ("profile", profile_id)
     assert main_window.form_existing.get_data() == profile_state[0]
     assert main_window.lbl_context.text().count("&rsaquo;") == 2  # P › S › PK 0
+
+
+def test_each_profile_draft_and_tab_gets_its_own_view_key(main_window):
+    """Le graphique mémorise le zoom par clé de vue : une clé par (profil ou brouillon,
+    onglet), jamais partagée entre un profil et un brouillon de même id, et aucune clé pour
+    le profil en long (qui ne mémorise rien)."""
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    draft_id = db.create_draft("Essai")
+    assert draft_id == profile_id
+    points = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
+    db.save_profile_state(profile_id, points, {})
+    db.save_draft_state(draft_id, points, {})
+    main_window.sidebar.refresh_tree()
+    fake = main_window.plot_view
+
+    click(main_window.sidebar, (PROFILE, profile_id))
+    assert fake.view_keys[-1] == f"profile:{profile_id}:existing"
+
+    main_window.tabs.setCurrentIndex(1)  # Profil projet
+    assert fake.view_keys[-1] == f"profile:{profile_id}:project"
+    main_window.tabs.setCurrentIndex(2)  # Hydraulique
+    assert fake.view_keys[-1] == f"profile:{profile_id}:hydraulics"
+
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    assert fake.view_keys[-1] is None
+
+    main_window.tabs.setCurrentIndex(0)
+    click(main_window.sidebar, (DRAFT, draft_id))
+    assert fake.view_keys[-1] == f"draft:{draft_id}:existing"
+
+    # Retour au même profil : exactement la même clé qu'avant le passage par le profil en long.
+    click(main_window.sidebar, (PROFILE, profile_id))
+    assert fake.view_keys[-1] == f"profile:{profile_id}:existing"
+
+
+def test_export_excel_button_writes_the_open_profile(main_window, monkeypatch, tmp_path):
+    from openpyxl import load_workbook
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, [], {"bed_width": 3.25})
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (PROFILE, profile_id))
+    target = tmp_path / "sortie.xlsx"
+    proposed = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda _parent, _title, name, _filter: (proposed.append(name), (str(target), ""))[1]))
+
+    main_window.form_project.btn_export_excel.click()
+
+    assert proposed == ["PK 0 - profil projet.xlsx"]
+    rows = list(load_workbook(target)["Paramètres"].iter_rows(values_only=True))
+    assert rows[2][:2] == ("Profil", "PK 0")
+    assert ("Lit trapézoïdal", "Largeur fond", 3.25, "m") in rows
 
 
 def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):

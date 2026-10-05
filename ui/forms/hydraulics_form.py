@@ -1,6 +1,6 @@
 # ui/forms/hydraulics_form.py
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QScrollArea,
-                                QRadioButton, QCheckBox, QDoubleSpinBox)
+                                QRadioButton, QCheckBox, QDoubleSpinBox, QLabel)
 from PyQt6.QtCore import pyqtSignal
 
 from ui import theme
@@ -76,6 +76,31 @@ class HydraulicsForm(QWidget):
         form_hydro.addRow("Strickler (Ks) – Lit majeur:", self.inputs['floodplain_ks'])
         layout.addWidget(grp_hydro)
 
+        # --- Lit de calcul (limites en X) ---
+        # Quand le profil comporte plusieurs lits, permet de ne calculer que sur celui
+        # compris entre deux X. Les limites agissent comme des parois verticales.
+        grp_bounds = QGroupBox("Lit de calcul")
+        layout_bounds = QVBoxLayout(grp_bounds)
+        self.chk_bounds = QCheckBox("Limiter le calcul au lit compris entre deux X")
+        self.chk_bounds.toggled.connect(self._toggle_bounds_fields)
+        layout_bounds.addWidget(self.chk_bounds)
+
+        form_bounds = QFormLayout()
+        self.inputs['hydro_x_left'] = self._create_spinbox(-1_000_000, 1_000_000, 0.5, 3, default_val=0.0)
+        self.inputs['hydro_x_right'] = self._create_spinbox(-1_000_000, 1_000_000, 0.5, 3, default_val=0.0)
+        form_bounds.addRow("X gauche (m):", self.inputs['hydro_x_left'])
+        form_bounds.addRow("X droite (m):", self.inputs['hydro_x_right'])
+        layout_bounds.addLayout(form_bounds)
+
+        hint_bounds = QLabel(
+            "L'eau ne s'étend pas au-delà de ces limites (parois verticales, non comptées "
+            "dans le périmètre mouillé). Elles sont tracées en tirets sur le graphique."
+        )
+        hint_bounds.setWordWrap(True)
+        hint_bounds.setStyleSheet(theme.qss("color: $TEXT_MUTED; font-size: ${FONT_SIZE_SM}px;"))
+        layout_bounds.addWidget(hint_bounds)
+        layout.addWidget(grp_bounds)
+
         # --- Superposition de l'autre profil ---
         self.chk_overlay = QCheckBox()
         self.chk_overlay.stateChanged.connect(self.on_value_changed)
@@ -92,6 +117,13 @@ class HydraulicsForm(QWidget):
 
         self._toggle_hydro_fields()
         self._update_overlay_label()
+        self._toggle_bounds_fields()
+
+    def _toggle_bounds_fields(self, _=None):
+        enabled = self.chk_bounds.isChecked()
+        self.inputs['hydro_x_left'].setEnabled(enabled)
+        self.inputs['hydro_x_right'].setEnabled(enabled)
+        self.on_value_changed()
 
     def _create_spinbox(self, min_val, max_val, step, decimals=2, default_val=None):
         sb = QDoubleSpinBox()
@@ -120,6 +152,7 @@ class HydraulicsForm(QWidget):
         data['calc_mode'] = 'Q_FROM_H' if self.radio_calc_q.isChecked() else 'H_FROM_Q'
         data['hydro_source'] = 'existing' if self.radio_source_existing.isChecked() else 'project'
         data['show_overlay'] = self.chk_overlay.isChecked()
+        data['hydro_bounds_enabled'] = self.chk_bounds.isChecked()
         return data
 
     def set_data(self, data: dict):
@@ -134,13 +167,20 @@ class HydraulicsForm(QWidget):
         self.radio_source_project.setChecked(source != 'existing')
 
         self.chk_overlay.setChecked(bool(data.get('show_overlay', False)))
+        self.chk_bounds.setChecked(bool(data.get('hydro_bounds_enabled', False)))
 
         for key, value in data.items():
             if key in self.inputs:
                 self.inputs[key].setValue(float(value))
+        # Profil enregistré avant l'ajout du lit de calcul : pas de limites en base, on
+        # remet les valeurs par défaut plutôt que de garder celles du profil précédent.
+        for key in ('hydro_x_left', 'hydro_x_right'):
+            if key not in data:
+                self.inputs[key].setValue(0.0)
 
         self._toggle_hydro_fields()
         self._update_overlay_label()
+        self._toggle_bounds_fields()
         self._is_loading = False
 
     def on_value_changed(self):

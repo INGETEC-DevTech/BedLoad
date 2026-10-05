@@ -97,6 +97,17 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
             )
         raccord_d = Point(x=p.connect_x_right, z=p.connect_z_right)
 
+    # Noms des points, repris tels quels dans l'export Excel du profil projet.
+    for point, label in (
+        (raccord_g, "Raccord terrain G"), (lmg, "Bout lit majeur G"),
+        (hdbg, "Haut de berge G"), (pdbg, "Pied de berge G"), (banq1, "Banquette G"),
+        (fdlg, "Fond du lit G (ancrage)"), (fdld, "Fond du lit D"),
+        (banq2, "Banquette D"), (pdbd, "Pied de berge D"), (hdbd, "Haut de berge D"),
+        (lmd, "Bout lit majeur D"), (raccord_d, "Raccord terrain D"),
+    ):
+        if point is not None:
+            point.label = label
+
     points = [hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd]
     if lmg is not None:
         points.insert(0, lmg)

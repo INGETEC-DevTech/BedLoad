@@ -4,9 +4,12 @@ import pandas as pd
 
 @dataclass
 class Point:
-    """Un point topographique (X = distance cumulée, Z = altitude)."""
+    """Un point topographique (X = distance cumulée, Z = altitude). `label` nomme le point
+    quand il a un rôle géométrique (ex. "Haut de berge G" sur le profil projet) ; il
+    n'entre pas dans la comparaison de deux points."""
     x: float
     z: float
+    label: str = field(default="", compare=False)
 
 @dataclass
 class CrossSection:
@@ -78,6 +81,11 @@ class ProjectParameters:
     # Rugosité (Strickler) du lit majeur : stockée pour un usage futur, pas encore
     # utilisée dans le calcul hydraulique (un seul paramètre pour les deux rives).
     floodplain_ks: float = 25.0
+    # Lit de calcul : si activé, le calcul hydraulique ne porte que sur le terrain compris
+    # entre ces deux X (cf. core.hydraulics.Bounds). Désactivé = tout le profil.
+    hydro_bounds_enabled: bool = False
+    hydro_x_left: float = 0.0
+    hydro_x_right: float = 0.0
 
     # --- Raccords latéraux optionnels vers le profil existant ---
     # Choisis manuellement (valeur figée à la sélection) : prolongent la géométrie

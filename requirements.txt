@@ -2,3 +2,4 @@ PyQt6>=6.7.0
 PyQt6-WebEngine>=6.7.0
 pandas>=2.0
 plotly>=5.20
+openpyxl>=3.1

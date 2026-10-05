@@ -1,9 +1,12 @@
 # ui/main_window.py
+import re
 from html import escape
 
-from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QStackedWidget, QLabel
+from PyQt6.QtWidgets import (QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QStackedWidget,
+                             QLabel, QFileDialog, QMessageBox)
 from PyQt6.QtCore import Qt
 
+from core.excel_export import export_project_profile
 from database.db_manager import DatabaseManager
 from ui.sidebar import Sidebar
 from ui.forms.existing_form import ExistingProfileForm
@@ -172,6 +175,30 @@ class MainWindow(QMainWindow):
         self.form_project.data_changed.connect(self.save_and_update_plot)
         self.form_hydraulics.data_changed.connect(self.save_and_update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        self.form_project.export_excel_requested.connect(self.export_project_excel)
+
+    def export_project_excel(self):
+        """Exporte le profil projet ouvert (points + paramètres) dans un classeur Excel
+        choisi par l'utilisateur. Le nom proposé reprend celui du profil."""
+        if self._current_target is None:
+            return
+        context = self.sidebar.current_context()
+        base_name = re.sub(r'[\\/:*?"<>|]', "_", context[-1]) if context else "profil"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter le profil projet", f"{base_name} - profil projet.xlsx",
+            "Classeur Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            export_project_profile(path, self.form_project.get_data(), context)
+        except ValueError as e:
+            QMessageBox.warning(self, "Export impossible", str(e))
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Export impossible",
+                f"Impossible d'écrire le fichier (est-il ouvert dans Excel ?)\n\n{e}",
+            )
 
     def on_tab_changed(self, index: int):
         self.update_plot()
@@ -298,4 +325,7 @@ class MainWindow(QMainWindow):
             self.plot_view.update_plot(None, error_message=str(e))
             return
 
-        self.plot_view.update_plot(fig)
+        # Une vue par (profil ou brouillon, onglet) : son zoom est mémorisé par le graphique
+        # et retrouvé au retour (ex. après un passage par le profil en long).
+        kind, row_id = self._current_target
+        self.plot_view.update_plot(fig, view_key=f"{kind}:{row_id}:{mode.value}")
