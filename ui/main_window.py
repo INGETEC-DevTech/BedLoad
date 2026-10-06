@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self.sidebar.project_selected.connect(lambda _id: self.show_placeholder(*self.WELCOME_PROJECT))
         self.sidebar.draft_zone_selected.connect(lambda: self.show_placeholder(*self.WELCOME_DRAFT_ZONE))
         self.sidebar.selection_cleared.connect(lambda: self.show_placeholder(*self.WELCOME_DEFAULT))
+        self.sidebar.project_data_changed.connect(self._on_project_data_changed)
         self.sidebar.context_changed.connect(
             lambda: self._update_context_bar(self.sidebar.current_context())
         )
@@ -199,6 +200,19 @@ class MainWindow(QMainWindow):
                 self, "Export impossible",
                 f"Impossible d'écrire le fichier (est-il ouvert dans Excel ?)\n\n{e}",
             )
+
+    def _on_project_data_changed(self, _project_id: int):
+        """Points durs ou distance modifiés : la pente calculée (et la distance) du profil
+        ouvert a pu changer en base ; on le recharge pour l'afficher à jour."""
+        if self._current_target is not None and self._current_target[0] == "profile":
+            self._open_editor(self._current_target)
+
+    def show_startup_messages(self):
+        """Bilan de la migration vers les points durs multiples, affiché une seule fois
+        (au premier lancement après la mise à jour)."""
+        message = self.db_manager.startup_slope_report.message()
+        if message:
+            QMessageBox.information(self, "Mise à jour des pentes hydrauliques", message)
 
     def on_tab_changed(self, index: int):
         self.update_plot()
@@ -271,10 +285,17 @@ class MainWindow(QMainWindow):
         self.form_existing.set_data(existing_data)
         self.form_project.set_existing_points(existing_data)
         self.form_hydraulics.set_existing_points(existing_data)
-        if not project_data:
-            project_data = self.controller.default_project_params()
+        # Valeurs par défaut complétées par celles enregistrées : un profil jamais ouvert
+        # peut n'avoir que quelques clés en base (ex. son mode de pente), et les formulaires
+        # ne doivent pas garder pour les autres les valeurs du profil précédent.
+        project_data = {**self.controller.default_project_params(), **(project_data or {})}
         self.form_project.set_data(project_data)
         self.form_hydraulics.set_data(project_data)
+        kind, row_id = target
+        if kind == "profile":
+            self.form_hydraulics.set_slope_info(self.db_manager.profile_slope_info(row_id))
+        else:
+            self.form_hydraulics.set_slope_info(None, is_draft=True)
 
         self.update_plot()
 
@@ -292,7 +313,7 @@ class MainWindow(QMainWindow):
 
         rows = self.db_manager.get_longitudinal_data(scenario_id)
         project_id = self.db_manager.get_scenario_project_id(scenario_id)
-        hard_points = self.db_manager.get_hard_points(project_id) if project_id is not None else None
+        hard_points = self.db_manager.get_hard_points(project_id) if project_id is not None else []
         fig = self.controller.build_longitudinal_figure(rows, hard_points)
         self.plot_view.update_plot(fig)
 

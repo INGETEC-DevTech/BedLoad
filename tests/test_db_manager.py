@@ -25,6 +25,21 @@ def raw_rows(db: DatabaseManager, sql: str, params=()):
         conn.close()
 
 
+def strip_mode(state):
+    """État d'un profil sans le mode de pente : après une duplication, un import ou un
+    renommage, le recalcul des pentes l'ajoute (ici "imposed", faute de points durs)."""
+    existing_data, params = state
+    return existing_data, {k: v for k, v in params.items() if k != "slope_mode"}
+
+
+def hard_points(db, project_id):
+    """Points durs du projet sans leurs identifiants en base."""
+    return [{k: p[k] for k in ("name", "pk", "z")} for p in db.get_hard_points(project_id)]
+
+
+TWO_POINTS = [{"name": "Pont Amont", "pk": 0.0, "z": 100.0}, {"name": "Pont Aval", "pk": 500.0, "z": 90.0}]
+
+
 # --- Structure Projet → Scénario → Profil ---
 
 def test_create_project_scenario_and_profile_round_trip(tmp_path):
@@ -194,7 +209,7 @@ def test_duplicate_profile_stays_in_its_scenario(tmp_path):
     scenarios = db.get_all_projects()[0]["scenarios"]
     assert [p["name"] for p in scenarios[0]["profiles"]] == ["Amont", "Copie"]
     assert [p["name"] for p in scenarios[1]["profiles"]] == ["Copie"]
-    assert db.load_profile_state(copy_id) == db.load_profile_state(source)
+    assert strip_mode(db.load_profile_state(copy_id)) == strip_mode(db.load_profile_state(source))
 
 
 def test_longitudinal_data_is_per_scenario(tmp_path):
@@ -293,11 +308,11 @@ def test_copied_scenario_is_independent_from_its_source(tmp_path):
         n: d for n, (d, _, _) in expected.items()
     }
     for name, (_, existing_data, params) in expected.items():
-        assert db.load_profile_state(source_ids[name]) == (existing_data, params)
+        assert strip_mode(db.load_profile_state(source_ids[name])) == (existing_data, params)
 
     # Et inversement : modifier la source ne touche pas la copie.
     db.save_profile_state(source_ids["PK 150"], [], {"anchor_z": 0.0})
-    assert db.load_profile_state(copy_ids["PK 150"]) == (expected["PK 150"][1], expected["PK 150"][2])
+    assert strip_mode(db.load_profile_state(copy_ids["PK 150"])) == (expected["PK 150"][1], expected["PK 150"][2])
 
     # Supprimer la source laisse la copie intacte.
     db.delete_scenario(source)
@@ -335,27 +350,22 @@ def test_create_scenario_with_existing_name_does_not_copy_profiles(tmp_path):
 
 # --- Points durs : au niveau du projet, partagés par ses scénarios ---
 
-def test_hard_points_default_to_none_then_round_trip(tmp_path):
+def test_hard_points_default_to_empty_then_round_trip(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
 
-    assert db.get_hard_points(project_id) == {
-        "upstream": {"name": None, "x": None, "z": None},
-        "downstream": {"name": None, "x": None, "z": None},
-    }
+    assert db.get_hard_points(project_id) == []
 
-    db.set_hard_points(project_id, "Pont Amont", 0.0, 100.0, "Pont Aval", 500.0, 90.0)
+    db.set_hard_points(project_id, TWO_POINTS)
 
-    assert db.get_hard_points(project_id) == {
-        "upstream": {"name": "Pont Amont", "x": 0.0, "z": 100.0},
-        "downstream": {"name": "Pont Aval", "x": 500.0, "z": 90.0},
-    }
+    assert hard_points(db, project_id) == TWO_POINTS
+    assert all(p["id"] is not None for p in db.get_hard_points(project_id))
 
 
 def test_hard_points_are_not_duplicated_per_scenario(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
-    db.set_hard_points(project_id, "Pont Amont", 0.0, 100.0, "Pont Aval", 500.0, 90.0)
+    db.set_hard_points(project_id, TWO_POINTS)
     source = db.create_scenario(project_id, "A")
     db.create_scenario(project_id, "B", source_scenario_id=source)
 
@@ -370,7 +380,7 @@ def test_hard_points_are_not_duplicated_per_scenario(tmp_path):
 def test_duplicate_project_copies_hard_points_scenarios_and_profiles(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("Original")
-    db.set_hard_points(project_id, "Pont Amont", 0.0, 100.0, "Pont Aval", 500.0, 90.0)
+    db.set_hard_points(project_id, TWO_POINTS)
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
     profile_a = db.create_or_get_profile(scenario_a, "Amont", 0.0)
@@ -380,7 +390,7 @@ def test_duplicate_project_copies_hard_points_scenarios_and_profiles(tmp_path):
 
     new_project_id = db.duplicate_project(project_id, "Copie")
 
-    assert db.get_hard_points(new_project_id) == db.get_hard_points(project_id)
+    assert hard_points(db, new_project_id) == hard_points(db, project_id) == TWO_POINTS
     by_name = {p["name"]: p for p in db.get_all_projects()}
     copied = by_name["Copie"]["scenarios"]
     assert [s["name"] for s in copied] == ["A", "B"]
@@ -575,10 +585,7 @@ def test_migration_adds_hard_point_columns_to_existing_projects_table(tmp_path):
 
     db = DatabaseManager(db_path=db_path)
 
-    assert db.get_hard_points(1) == {
-        "upstream": {"name": None, "x": None, "z": None},
-        "downstream": {"name": None, "x": None, "z": None},
-    }
+    assert db.get_hard_points(1) == []
 
 
 def _create_pre_scenario_db(db_path) -> None:
@@ -665,12 +672,14 @@ def test_migration_to_scenarios_preserves_profiles_ids_and_data(tmp_path):
     assert projects[4]["scenarios"][0]["profiles"] == [
         {"id": 5, "name": "Test 1", "distance": 100.0},
     ]
-    assert db.load_profile_state(2) == ([{"X (m)": 0.0, "Z (m NGF)": 99.0}], {"anchor_z": 98.0})
-    assert db.load_profile_state(4) == ([{"X (m)": 0.0, "Z (m NGF)": 97.0}], {"anchor_z": 96.0})
+    assert strip_mode(db.load_profile_state(2)) == ([{"X (m)": 0.0, "Z (m NGF)": 99.0}], {"anchor_z": 98.0})
+    assert strip_mode(db.load_profile_state(4)) == ([{"X (m)": 0.0, "Z (m NGF)": 97.0}], {"anchor_z": 96.0})
+    # Projets sans points durs : les profils migrés passent en pente imposée.
+    assert db.load_profile_state(2)[1]["slope_mode"] == "imposed"
     last_updated = {r["id"]: r["last_updated"] for r in raw_rows(db, "SELECT id, last_updated FROM profiles")}
     assert last_updated == {2: "2026-09-20 10:00:00", 4: "2026-09-21 11:00:00", 5: "2026-09-22 12:00:00"}
     # Les points durs restent sur le projet, inchangés.
-    assert db.get_hard_points(1)["upstream"] == {"name": "Début", "x": 0.0, "z": 101.5}
+    assert hard_points(db, 1)[0] == {"name": "Début", "pk": 0.0, "z": 101.5}
 
 
 def test_migration_to_scenarios_moves_uniqueness_to_scenario_level(tmp_path):
@@ -839,8 +848,20 @@ def test_migration_adds_archived_column_and_keeps_every_project_active(tmp_path)
 
     assert [(p["id"], p["name"]) for p in db.get_all_projects()] == [(3, "Ancien"), (8, "Autre")]
     assert db.get_archived_projects() == []
-    assert db.get_hard_points(3)["upstream"] == {"name": "Seuil", "x": 12.5, "z": 101.25}
+    assert hard_points(db, 3) == [{"name": "Seuil", "pk": 12.5, "z": 101.25}]
     # Idempotent : rouvrir la base ne rajoute pas la colonne une seconde fois.
     DatabaseManager(db_path=db_path)
     columns = [r["name"] for r in raw_rows(db, "PRAGMA table_info(projects)")]
     assert columns.count("archived") == 1
+
+
+def test_longitudinal_data_carries_the_profile_names(tmp_path):
+    db = make_db(tmp_path)
+    scenario_id = make_scenario(db)
+    db.create_or_get_profile(scenario_id, "Aval", 200.0)
+    db.create_or_get_profile(scenario_id, "Amont", 0.0)
+
+    rows = db.get_longitudinal_data(scenario_id)
+
+    assert [(r[0], r[3]) for r in rows] == [(0.0, "Amont"), (200.0, "Aval")]
+

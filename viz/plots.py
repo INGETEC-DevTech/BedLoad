@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 import plotly.graph_objects as go
 
 from core.earthworks import CUT, EarthworksResult
+from core.hard_points import format_slope
 from core.models import CrossSection
 from core.longitudinal import LongitudinalProfile
 
@@ -18,6 +19,8 @@ EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
 HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
 CALC_BOUND_COLOR = "#6c757d" # gris : limites du lit de calcul hydraulique
+STATION_COLOR = "#ced4da"       # gris clair : position des profils en travers (profil en long)
+STATION_LABEL_COLOR = "#495057" # gris foncé : nom de ces profils
 CUT_COLOR = "#d62728"        # rouge : déblai (terrain existant à enlever)
 FILL_COLOR = "#ff7f0e"       # orange : remblai (matériaux à ajouter)
 # Surface en dessous de laquelle une zone n'est pas étiquetée sur le graphique (elle reste
@@ -278,12 +281,25 @@ def plot_overlay(
 
 def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
     """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
-    (anchor_z), chacun tracé en fonction de la distance au point dur amont. Contrairement
+    (anchor_z), chacun tracé en fonction de la distance au premier point dur. Contrairement
     aux coupes transversales, les axes ne sont volontairement PAS orthonormés (cette
     distance s'étend typiquement sur des centaines de mètres pour quelques mètres
     d'altitude)."""
     fig = go.Figure()
 
+    # Profils en travers : un trait vertical discret à la position de chacun, et son nom
+    # écrit verticalement en bas de la zone de tracé (le haut est déjà occupé par les noms
+    # des points durs et la légende).
+    for distance, name in profile.stations:
+        fig.add_vline(x=distance, line=dict(color=STATION_COLOR, width=1, dash="dot"), layer="below")
+        fig.add_annotation(
+            x=distance, y=0, xref="x", yref="paper", yanchor="bottom", yshift=4,
+            text=name, textangle=-90, showarrow=False,
+            font=dict(size=10, color=STATION_LABEL_COLOR), bgcolor="rgba(255, 255, 255, 0.8)",
+        )
+
+    # Survol : le nom du profil en plus de sa distance et de son altitude.
+    hover = "<b>%{text}</b> : %{y:.2f} m NGF<extra>%{fullData.name}</extra>"
     fig.add_trace(
         go.Scatter(
             x=profile.pk_existing, y=profile.z_existing,
@@ -291,6 +307,7 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
             name="TN existant (thalweg)",
             line=dict(color=EXISTING_COLOR, width=2),
             marker=dict(size=6),
+            text=profile.names_existing, hovertemplate=hover,
         )
     )
 
@@ -301,34 +318,47 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
             name="Projet (fond de lit)",
             line=dict(color=PROJECT_COLOR, width=2),
             marker=dict(size=6),
+            text=profile.names_project, hovertemplate=hover,
         )
     )
 
-    # Points durs (repères de terrain fixes) : un marqueur ponctuel par point, sans
-    # ligne (ce ne sont pas des courbes), identifié par son propre nom dans la légende
-    # et l'étiquette affichée au-dessus du marqueur. Absents du graphique tant que leurs
-    # coordonnées ne sont pas toutes renseignées (cf. build_longitudinal_profile).
-    for hard_point in (profile.hard_point_upstream, profile.hard_point_downstream):
-        if hard_point is None:
-            continue
+    # Points durs (repères de terrain fixes) : reliés par un trait pointillé qui matérialise
+    # les tronçons de pente (pente affichée en m/m, comme dans l'onglet Hydraulique), et
+    # chacun identifié par son nom au-dessus de son marqueur.
+    if profile.segments:
         fig.add_trace(
             go.Scatter(
-                x=[hard_point.distance], y=[hard_point.z],
-                mode="markers+text",
-                name=hard_point.name,
-                text=[hard_point.name],
+                x=[m.distance for m in profile.hard_points], y=[m.z for m in profile.hard_points],
+                mode="lines", name="Tronçons entre points durs",
+                line=dict(color=HARD_POINT_COLOR, width=1.5, dash="dot"),
+                hoverinfo="skip",
+            )
+        )
+        for segment in profile.segments:
+            fig.add_annotation(
+                x=(segment.start.distance + segment.end.distance) / 2,
+                y=(segment.start.z + segment.end.z) / 2,
+                text=f"I = {format_slope(segment.slope)}",
+                showarrow=False, yshift=12,
+                font=dict(size=11, color=HARD_POINT_COLOR),
+                bgcolor="rgba(255, 255, 255, 0.85)",
+            )
+    if profile.hard_points:
+        fig.add_trace(
+            go.Scatter(
+                x=[m.distance for m in profile.hard_points], y=[m.z for m in profile.hard_points],
+                mode="markers+text", name="Points durs",
+                text=[m.name for m in profile.hard_points],
                 textposition="top center",
                 textfont=dict(size=11, color=HARD_POINT_COLOR),
-                marker=dict(
-                    size=13, symbol="diamond", color=HARD_POINT_COLOR,
-                    line=dict(width=1, color="#ffffff"),
-                ),
+                marker=dict(size=13, symbol="diamond", color=HARD_POINT_COLOR,
+                            line=dict(width=1, color="#ffffff")),
             )
         )
 
     fig = _apply_common_layout(fig, "Profil en long")
     fig.update_layout(xaxis_title=dict(
-        text="Distance au point dur amont (m)", font=dict(size=12, color="#6c757d")
+        text="Distance au premier point dur (m)", font=dict(size=12, color="#6c757d")
     ))
     # On annule l'échelle orthonormée héritée de _apply_common_layout : non pertinente ici.
     fig.update_yaxes(scaleanchor=None, scaleratio=None)

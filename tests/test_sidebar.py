@@ -716,7 +716,7 @@ def test_import_file_project_creates_a_new_project_without_prompting(sidebar, db
     assert opened
 
 
-def test_import_profile_into_scenario_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch):
+def test_import_profile_into_scenario_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch, info_messages):
     draft_id = db.create_draft("Essai")
     db.save_draft_state(draft_id, [{"X (m)": 3.0, "Z (m NGF)": 4.0}], {"anchor_z": 3.5})
     path = tmp_path / "profile.json"
@@ -732,7 +732,11 @@ def test_import_profile_into_scenario_context_menu_skips_destination_prompt(side
 
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
     assert [p["name"] for p in profiles] == ["Essai"]
-    assert db.load_profile_state(profiles[0]["id"]) == ([{"X (m)": 3.0, "Z (m NGF)": 4.0}], {"anchor_z": 3.5})
+    # Projet sans points durs : le profil importé (pente calculée par défaut) passe en
+    # pente imposée, et un message le signale.
+    assert db.load_profile_state(profiles[0]["id"]) == (
+        [{"X (m)": 3.0, "Z (m NGF)": 4.0}], {"anchor_z": 3.5, "slope_mode": "imposed"})
+    assert len(info_messages) == 1 and "passé(s) en pente imposée" in info_messages[0][1]
 
 
 def test_import_scenario_into_project_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch):
@@ -908,3 +912,178 @@ def test_archives_dialog_deletes_only_after_confirmation(qapp, db, monkeypatch):
     dialog.delete_selected()
     assert db.get_archived_projects() == []
     assert dialog.list_widget.count() == 0
+
+
+# --- Points durs multiples et pente hydraulique calculée ---
+
+HP_POINTS = [
+    {"name": "A", "pk": 1000.0, "z": 50.0},
+    {"name": "B", "pk": 1200.0, "z": 46.0},
+    {"name": "C", "pk": 1400.0, "z": 45.0},
+]
+
+
+def _accept_hard_points_dialog(monkeypatch, edit):
+    """Remplace l'affichage du dialogue des points durs : `edit(dialog)` modifie le
+    tableau comme le ferait l'utilisateur, puis le dialogue est validé (s'il n'y a pas
+    d'erreur, comme avec le vrai bouton OK)."""
+    from PyQt6.QtWidgets import QDialogButtonBox
+    from ui.dialogs.hard_points_dialog import HardPointsDialog
+
+    def fake_exec(dialog):
+        edit(dialog)
+        ok = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+        return QDialog.DialogCode.Accepted if ok else QDialog.DialogCode.Rejected
+    monkeypatch.setattr(HardPointsDialog, "exec", fake_exec)
+
+
+def test_editing_hard_points_recomputes_slopes_and_reports_them(sidebar, db, monkeypatch, info_messages):
+    from ui.dialogs.hard_points_dialog import COL_Z
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, HP_POINTS)
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 1100", 100.0)
+    sidebar.refresh_tree()
+    changed = record(sidebar.project_data_changed)
+    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(0, COL_Z).setText("52"))
+
+    sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
+
+    assert db.get_hard_points(project_id)[0]["z"] == 52.0
+    assert db.load_profile_state(profile_id)[1]["slope"] == pytest.approx(0.03)
+    assert info_messages and "1 profil(s) mis à jour : S › PK 1100" in info_messages[-1][1]
+    assert changed == [(project_id,)]
+
+
+def test_hard_points_that_would_leave_a_profile_outside_cannot_be_validated(sidebar, db, monkeypatch):
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, HP_POINTS)
+    scenario_id = db.create_scenario(project_id, "S")
+    db.create_or_get_profile(scenario_id, "PK 1350", 350.0)
+    sidebar.refresh_tree()
+    seen = {}
+
+    def remove_last_point(dialog):
+        dialog.table.selectRow(2)
+        dialog.remove_selected_point()
+        seen["errors"] = dialog.lbl_errors.text()
+    _accept_hard_points_dialog(monkeypatch, remove_last_point)
+
+    sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
+
+    assert "« S › PK 1350 » (PK 1350)" in seen["errors"]
+    assert len(db.get_hard_points(project_id)) == 3  # rien d'enregistré
+
+
+def test_distance_prompt_is_bounded_by_the_hard_points(sidebar, db, monkeypatch):
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, HP_POINTS)
+    scenario_id = db.create_scenario(project_id, "S")
+    sidebar.refresh_tree()
+    asked = {}
+
+    def fake_get_double(parent, title, label, value, low, high, decimals):
+        asked.update(label=label, low=low, high=high)
+        return 250.0, True
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("PK 1250", True)))
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(fake_get_double))
+
+    sidebar.add_profile_to_scenario(scenario_id, project_id)
+
+    assert (asked["low"], asked["high"]) == (0.0, 400.0)
+    assert "au premier point dur « A »" in asked["label"] and "entre 0 et 400" in asked["label"]
+    profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
+    assert db.load_profile_state(profile["id"])[1] == {"slope_mode": "computed", "slope": pytest.approx(0.005)}
+
+
+def _open_profile(window, distance=100.0, points=HP_POINTS):
+    db = window.db_manager
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, points)
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK", distance)
+    window.sidebar.refresh_tree()
+    click(window.sidebar, (PROFILE, profile_id))
+    return project_id, profile_id
+
+
+def test_hydraulics_tab_shows_the_computed_slope_greyed_with_its_segment(main_window):
+    _open_profile(main_window, distance=250.0)
+    form = main_window.form_hydraulics
+
+    assert not form.chk_impose_slope.isChecked() and form.chk_impose_slope.isEnabled()
+    assert not form.inputs["slope"].isEnabled()
+    assert form.inputs["slope"].value() == pytest.approx(0.005)
+    assert form.lbl_slope_info.text() == "Pente calculée sur le tronçon « B » → « C » : 0.0050 m/m."
+
+
+def test_imposing_a_slope_then_unchecking_returns_to_the_computed_value(main_window):
+    _, profile_id = _open_profile(main_window, distance=100.0)
+    form = main_window.form_hydraulics
+    db = main_window.db_manager
+
+    form.chk_impose_slope.setChecked(True)
+    form.inputs["slope"].setValue(0.0123)
+    assert form.inputs["slope"].isEnabled()
+    assert db.load_profile_state(profile_id)[1]["slope_mode"] == "imposed"
+    assert db.load_profile_state(profile_id)[1]["slope"] == pytest.approx(0.0123)
+    assert "Pente calculée : 0.0200 m/m" in form.lbl_slope_info.text()
+
+    form.chk_impose_slope.setChecked(False)
+    assert form.inputs["slope"].value() == pytest.approx(0.02) and not form.inputs["slope"].isEnabled()
+    saved = db.load_profile_state(profile_id)[1]
+    assert (saved["slope_mode"], saved["slope"]) == ("computed", pytest.approx(0.02))
+
+
+def test_imposed_slope_is_kept_when_the_profile_is_reopened(main_window):
+    _, profile_id = _open_profile(main_window)
+    form = main_window.form_hydraulics
+    form.chk_impose_slope.setChecked(True)
+    form.inputs["slope"].setValue(0.0123)
+
+    click(main_window.sidebar, (SCENARIO, main_window.db_manager.get_scenarios(1)[0]["id"]))
+    click(main_window.sidebar, (PROFILE, profile_id))
+
+    assert form.chk_impose_slope.isChecked() and form.inputs["slope"].value() == pytest.approx(0.0123)
+
+
+def test_without_possible_computation_the_slope_is_imposed_and_explained(main_window):
+    _open_profile(main_window, points=[{"name": "Seul", "pk": 0.0, "z": 50.0}])
+    form = main_window.form_hydraulics
+
+    assert form.chk_impose_slope.isChecked() and not form.chk_impose_slope.isEnabled()
+    assert form.inputs["slope"].isEnabled()
+    assert "calcul impossible" in form.lbl_slope_info.text()
+    assert "au moins deux points durs" in form.lbl_slope_info.text()
+
+
+def test_drafts_always_have_an_imposed_slope(main_window):
+    db = main_window.db_manager
+    draft_id = db.create_draft("Essai")
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (DRAFT, draft_id))
+
+    form = main_window.form_hydraulics
+    assert form.chk_impose_slope.isChecked() and not form.chk_impose_slope.isEnabled()
+    assert "Brouillon" in form.lbl_slope_info.text()
+    assert db.load_draft_state(draft_id)[1].get("slope_mode") in (None, "imposed")
+
+
+def test_open_profile_is_refreshed_after_its_hard_points_change(main_window, monkeypatch):
+    from ui.dialogs.hard_points_dialog import COL_Z
+    project_id, _ = _open_profile(main_window, distance=100.0)
+    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(0, COL_Z).setText("52"))
+
+    main_window.sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
+
+    assert main_window.form_hydraulics.inputs["slope"].value() == pytest.approx(0.03)
+
+
+def test_startup_message_reports_the_migration(main_window, info_messages):
+    main_window.db_manager.startup_slope_report.updated = ["S › PK 100"]
+
+    main_window.show_startup_messages()
+
+    assert info_messages[-1][0] == "Mise à jour des pentes hydrauliques"
+    assert "1 profil(s) mis à jour : S › PK 100" in info_messages[-1][1]

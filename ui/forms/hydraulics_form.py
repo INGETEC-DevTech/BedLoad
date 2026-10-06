@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGr
 from PyQt6.QtCore import pyqtSignal
 
 from core.controller import ALL_ZONE, CUSTOM_ZONE, LEFT_ARM, RIGHT_ARM
+from core.hard_points import SLOPE_COMPUTED, SLOPE_IMPOSED, format_slope
 from core.hydraulics import suggest_arm_split
 from core.models import Point, dataframe_to_points
 from ui import theme
@@ -32,6 +33,10 @@ class HydraulicsForm(QWidget):
         self._is_loading = False
         # Points du profil existant (cf. set_existing_points).
         self._existing_points = []
+        # Pente calculée disponible pour le profil ouvert (cf. set_slope_info), et mode de
+        # pente lu dans ses paramètres (cf. set_data).
+        self._slope_info = None
+        self._saved_slope_mode = None
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -82,6 +87,16 @@ class HydraulicsForm(QWidget):
         form_hydro.addRow("Tirant d'eau h (m):", self.inputs['h_eau'])
         form_hydro.addRow("Débit Cible Q (m³/s):", self.inputs['q_target'])
         form_hydro.addRow("Pente long. (m/m):", self.inputs['slope'])
+
+        # Pente calculée à partir des points durs du projet (tronçon qui encadre le
+        # profil), sauf si l'utilisateur l'impose (cf. set_slope_info).
+        self.chk_impose_slope = QCheckBox("Imposer une pente")
+        self.chk_impose_slope.toggled.connect(self._on_impose_slope_toggled)
+        form_hydro.addRow("", self.chk_impose_slope)
+        self.lbl_slope_info = QLabel()
+        self.lbl_slope_info.setWordWrap(True)
+        self.lbl_slope_info.setStyleSheet(theme.qss("color: $TEXT_MUTED; font-size: ${FONT_SIZE_SM}px;"))
+        form_hydro.addRow("", self.lbl_slope_info)
         form_hydro.addRow("Strickler (Ks):", self.inputs['ks_pro'])
         form_hydro.addRow("Strickler (Ks) – Lit majeur:", self.inputs['floodplain_ks'])
         layout.addWidget(grp_hydro)
@@ -251,9 +266,67 @@ class HydraulicsForm(QWidget):
         self.chk_overlay.setText(f"Afficher le profil {other} en fond")
         self.on_value_changed()
 
+    # --- Pente : calculée (points durs) ou imposée ---
+
+    def set_slope_info(self, info, is_draft: bool = False):
+        """Pente calculée disponible pour le profil ouvert ({"slope", "segment", "reason"},
+        cf. DatabaseManager.profile_slope_info), appelée par MainWindow après set_data.
+        - brouillon (`is_draft`) : pas de points durs, pente toujours saisie à la main ;
+        - aucun calcul possible : pente imposée, case verrouillée, raison affichée ;
+        - sinon : pente calculée (champ grisé, valeur du tronçon), sauf si le profil est
+          enregistré en pente imposée."""
+        self._slope_info = None if is_draft else info
+        was_loading = self._is_loading
+        self._is_loading = True
+        self.chk_impose_slope.blockSignals(True)
+        if is_draft:
+            self.chk_impose_slope.setChecked(True)
+            self.chk_impose_slope.setEnabled(False)
+        elif not info or info.get("slope") is None:
+            self.chk_impose_slope.setChecked(True)
+            self.chk_impose_slope.setEnabled(False)
+        else:
+            self.chk_impose_slope.setEnabled(True)
+            self.chk_impose_slope.setChecked(self._saved_slope_mode == SLOPE_IMPOSED)
+        self.chk_impose_slope.blockSignals(False)
+        self._apply_slope_mode()
+        self._is_loading = was_loading
+
+    def _computed_slope(self):
+        return self._slope_info.get("slope") if self._slope_info else None
+
+    def _apply_slope_mode(self):
+        """Champ pente et texte explicatif selon le mode courant."""
+        computed = self._computed_slope()
+        imposed = self.chk_impose_slope.isChecked()
+        slope_input = self.inputs['slope']
+        if not imposed and computed is not None:
+            slope_input.blockSignals(True)
+            slope_input.setValue(computed)
+            slope_input.blockSignals(False)
+        slope_input.setEnabled(imposed)
+
+        if self._slope_info is None and not self.chk_impose_slope.isEnabled():
+            text = "Brouillon : pas de points durs, pente saisie à la main."
+        elif computed is None:
+            reason = (self._slope_info or {}).get("reason") or "points durs insuffisants"
+            text = f"Pente imposée : calcul impossible ({reason})."
+        elif imposed:
+            text = (f"Pente imposée. Pente calculée : {format_slope(computed)} sur le tronçon "
+                    f"{self._slope_info['segment']} ; décochez pour la reprendre.")
+        else:
+            text = f"Pente calculée sur le tronçon {self._slope_info['segment']} : {format_slope(computed)}."
+        self.lbl_slope_info.setText(text)
+
+    def _on_impose_slope_toggled(self, _checked: bool):
+        # Décocher revient à la valeur calculée ; cocher garde la valeur actuelle, modifiable.
+        self._apply_slope_mode()
+        self.on_value_changed()
+
     def get_data(self) -> dict:
         data = {key: sb.value() for key, sb in self.inputs.items()}
         data['calc_mode'] = 'Q_FROM_H' if self.radio_calc_q.isChecked() else 'H_FROM_Q'
+        data['slope_mode'] = SLOPE_IMPOSED if self.chk_impose_slope.isChecked() else SLOPE_COMPUTED
         data['hydro_source'] = 'existing' if self.radio_source_existing.isChecked() else 'project'
         data['show_overlay_hydraulics'] = self.chk_overlay.isChecked()
         if self.radio_zone_arm.isChecked():
@@ -267,6 +340,7 @@ class HydraulicsForm(QWidget):
     def set_data(self, data: dict):
         self._is_loading = True
 
+        self._saved_slope_mode = data.get('slope_mode')
         mode = data.get('calc_mode', 'Q_FROM_H')
         self.radio_calc_q.setChecked(mode == 'Q_FROM_H')
         self.radio_calc_h.setChecked(mode == 'H_FROM_Q')

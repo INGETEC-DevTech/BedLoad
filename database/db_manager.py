@@ -3,13 +3,18 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import logging
+from core.hard_points import (SLOPE_COMPUTED, SLOPE_IMPOSED, HardPoint, SlopeReport, computed_slope,
+                              distance_zone, reference_pk, validate_hard_points)
 from core.utils import DATA_DIR_NAME, DB_FILE_NAME, get_base_dir
 
 # Construction du chemin absolu dynamique (à côté de l'exe : appli portable, cf.
 # core.utils.find_storage_problem pour la vérification des droits d'écriture au démarrage)
 DB_PATH = get_base_dir() / DATA_DIR_NAME / DB_FILE_NAME
 
-# Colonnes des points durs (amont/aval) sur la table `projects`. Un point dur est un
+# Colonnes des ANCIENS points durs (amont/aval) sur la table `projects`, remplacées par la
+# table `hard_points` (liste libre, cf. _HARD_POINTS_TABLE_SQL). Conservées en base pour ne
+# rien perdre, elles ne servent plus qu'à la migration et à l'import d'anciens fichiers.
+# Ancienne description : Un point dur est un
 # repère de terrain fixe, associé à un nom et des coordonnées (X, Z) ; le point dur
 # amont sert de référence pour la distance des profils (cf. table `profiles`), mais
 # cette relation n'est que conventionnelle : rien ne recalcule automatiquement les
@@ -47,6 +52,20 @@ _PROFILES_TABLE_SQL = """
     )
 """
 
+# Points durs d'un projet : liste libre (nom, PK, Z), commune à tous ses scénarios,
+# ordonnée par PK (cf. core.hard_points pour les règles). PK et Z peuvent être vides pour
+# un point hérité incomplet, ignoré dans les calculs.
+_HARD_POINTS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS hard_points (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT,
+        pk REAL,
+        z REAL,
+        FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+    )
+"""
+
 # Tables portant un état éditable par le formulaire complet (profil existant + profil
 # projet + hydraulique) : les profils des scénarios, et les brouillons de la zone Draft.
 # Liste blanche : ces noms sont injectés dans du SQL (un nom de table ne peut pas être
@@ -56,7 +75,9 @@ _STATE_TABLES = ("profiles", "drafts")
 # Format des fichiers d'export/import JSON (cf. section EXPORT / IMPORT en fin de classe).
 # `version` accompagne chaque fichier pour permettre de faire évoluer le format plus tard
 # sans casser les exports déjà sur le disque des utilisateurs.
-_EXPORT_VERSION = 1
+# Version 2 : points durs en liste ("hard_points": [{"name", "pk", "z"}, ...]) au lieu du
+# couple {"upstream", "downstream"} de la version 1, toujours accepté à l'import.
+_EXPORT_VERSION = 2
 _EXPORT_TYPES = ("profile", "scenario", "project")
 
 
@@ -64,6 +85,11 @@ class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Bilan des pentes recalculées par la migration vers les points durs multiples (à
+        # afficher une fois au démarrage), et par la dernière opération qui en recalcule
+        # (création/modification de profil, points durs, import...).
+        self.startup_slope_report = SlopeReport()
+        self.last_slope_report = SlopeReport()
         self._init_db()
 
     def _get_connection(self, foreign_keys: bool = True) -> sqlite3.Connection:
@@ -125,6 +151,11 @@ class DatabaseManager:
             # est laissée telle quelle ici et convertie par les migrations ci-dessous.
             cursor.execute(_PROFILES_TABLE_SQL.format(table="IF NOT EXISTS profiles"))
 
+            had_hard_points_table = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hard_points'"
+            ).fetchone() is not None
+            cursor.execute(_HARD_POINTS_TABLE_SQL)
+
             # Zone Draft : brouillons de test jetables, sans projet, scénario, distance ni
             # point dur. Aucune clé étrangère : rien ne les relie aux vrais projets.
             cursor.execute("""
@@ -141,6 +172,8 @@ class DatabaseManager:
 
             self._migrate_legacy_schema(conn)
             self._migrate_profiles_to_scenarios(conn)
+            if not had_hard_points_table:
+                self._migrate_hard_points_to_list(conn)
 
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
@@ -313,6 +346,42 @@ class DatabaseManager:
                 f"déjà supprimé) écarté(s) : {orphans}"
             )
 
+    def _migrate_hard_points_to_list(self, conn: sqlite3.Connection) -> None:
+        """Passe des deux points durs amont/aval (colonnes de `projects`) à la liste libre
+        (table `hard_points`) : l'amont devient le premier point, l'aval le dernier ; un point
+        entièrement vide n'est pas repris, un point incomplet l'est tel quel. Puis tous les
+        profils existants passent en pente calculée (ou imposée si aucun calcul n'est
+        possible), bilan conservé dans startup_slope_report. Une seule transaction."""
+        cursor = conn.cursor()
+        columns = ", ".join(_HARD_POINT_COLUMNS)
+        report = SlopeReport()
+        cursor.execute("BEGIN")
+        try:
+            projects = cursor.execute(f"SELECT id, {columns} FROM projects ORDER BY id").fetchall()
+            for row in projects:
+                for side in ("upstream", "downstream"):
+                    name = row[f"hard_point_{side}_name"]
+                    pk = row[f"hard_point_{side}_x"]
+                    z = row[f"hard_point_{side}_z"]
+                    if name is None and pk is None and z is None:
+                        continue
+                    cursor.execute(
+                        "INSERT INTO hard_points (project_id, name, pk, z) VALUES (?, ?, ?, ?)",
+                        (row["id"], name, pk, z),
+                    )
+            for row in projects:
+                report.merge(self._refresh_slopes(cursor, row["id"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        self.startup_slope_report = report
+        logging.info(
+            f"Migration vers les points durs multiples : {len(projects)} projet(s), "
+            f"{len(report.updated)} profil(s) en pente calculée, "
+            f"{len(report.switched_to_imposed)} en pente imposée."
+        )
+
     # --- GESTION DES PROJETS ---
 
     def get_all_projects(self) -> List[Dict]:
@@ -402,50 +471,170 @@ class DatabaseManager:
             except sqlite3.IntegrityError:
                 raise ValueError(self._project_exists_message(conn, new_name))
 
-    def get_hard_points(self, project_id: int) -> Optional[Dict[str, Dict[str, Optional[float]]]]:
-        """Retourne les points durs amont/aval d'un projet : {"upstream": {"name","x","z"},
-        "downstream": {...}}. Les champs non renseignés valent None. Retourne None si le
-        projet est introuvable."""
+    @staticmethod
+    def _hard_points(cursor: sqlite3.Cursor, project_id: int) -> List[HardPoint]:
+        rows = cursor.execute(
+            "SELECT id, name, pk, z FROM hard_points WHERE project_id = ? ORDER BY pk IS NULL, pk, id",
+            (project_id,),
+        ).fetchall()
+        return [HardPoint(name=r["name"], pk=r["pk"], z=r["z"], id=r["id"]) for r in rows]
+
+    def get_hard_points(self, project_id: int) -> List[Dict]:
+        """Points durs d'un projet [{id, name, pk, z}], triés par PK (points incomplets à la
+        fin). Liste vide si le projet n'en a pas (ou n'existe pas)."""
+        with self._get_connection() as conn:
+            return [p.to_dict() for p in self._hard_points(conn.cursor(), project_id)]
+
+    def get_distance_zone(self, project_id: int) -> Optional[Tuple[float, float]]:
+        """Plage de distances autorisée pour les profils du projet (0 = premier point dur,
+        jusqu'au dernier), ou None faute de deux points durs complets."""
+        with self._get_connection() as conn:
+            return distance_zone(self._hard_points(conn.cursor(), project_id))
+
+    @staticmethod
+    def _project_profiles(cursor: sqlite3.Cursor, project_id: int) -> List[sqlite3.Row]:
+        return cursor.execute(
+            """SELECT p.id, p.name, p.distance, p.project_params, s.name AS scenario_name
+               FROM profiles p JOIN scenarios s ON s.id = p.scenario_id
+               WHERE s.project_id = ? ORDER BY s.id, p.distance""",
+            (project_id,),
+        ).fetchall()
+
+    def _hard_points_errors(self, cursor: sqlite3.Cursor, project_id: int, new_points: List[HardPoint]) -> List[str]:
+        """Erreurs de la liste `new_points` pour ce projet (cf. validate_hard_points), en
+        tenant compte de ses points actuels (référence, points incomplets hérités) et de la
+        position réelle de ses profils (référence actuelle + distance ; sans référence
+        actuelle, les distances sont prises par rapport à la nouvelle)."""
+        old_points = self._hard_points(cursor, project_id)
+        old_complete = [p for p in old_points if p.is_complete]
+        old_reference_pk = reference_pk(old_points)
+        base_pk = old_reference_pk if old_reference_pk is not None else reference_pk(new_points)
+        profile_pks = {} if base_pk is None else {
+            f"{r['scenario_name']} › {r['name']}": base_pk + r["distance"]
+            for r in self._project_profiles(cursor, project_id)
+        }
+        return validate_hard_points(
+            new_points,
+            reference_id=min(old_complete, key=lambda p: p.pk).id if old_complete else None,
+            profile_pks=profile_pks,
+            original_incomplete={p.id: (p.name, p.pk, p.z) for p in old_points if not p.is_complete},
+        )
+
+    def check_hard_points(self, project_id: int, points: List[Dict]) -> List[str]:
+        """Vérification "à blanc" d'une liste de points durs (rien n'est enregistré) : les
+        mêmes messages que set_hard_points, pour les afficher pendant la saisie."""
+        with self._get_connection() as conn:
+            return self._hard_points_errors(conn.cursor(), project_id, [HardPoint.from_dict(p) for p in points])
+
+    def set_hard_points(self, project_id: int, points: List[Dict]) -> SlopeReport:
+        """Remplace les points durs d'un projet par `points` ([{id?, name, pk, z}] ; id
+        renseigné pour un point déjà en base), après validation (cf.
+        core.hard_points.validate_hard_points ; ValueError avec tous les messages sinon).
+
+        Les profils gardent leur position réelle (PK) : si le premier point dur (référence
+        "distance 0") change de PK, leurs distances sont décalées d'autant. Les pentes
+        calculées sont ensuite recalculées ; le bilan est retourné (et conservé dans
+        last_slope_report). Une seule transaction."""
+        new_points = [HardPoint.from_dict(p) for p in points]
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                f"SELECT {', '.join(_HARD_POINT_COLUMNS)} FROM projects WHERE id = ?",
-                (project_id,)
-            )
-            row = cursor.fetchone()
+            errors = self._hard_points_errors(cursor, project_id, new_points)
+            if errors:
+                raise ValueError("\n".join(errors))
+            old_reference_pk = reference_pk(self._hard_points(cursor, project_id))
+            new_reference_pk = reference_pk(new_points)
+            profiles = self._project_profiles(cursor, project_id)
 
-        if row is None:
-            return None
+            cursor.execute("DELETE FROM hard_points WHERE project_id = ?", (project_id,))
+            for point in new_points:
+                cursor.execute(
+                    "INSERT INTO hard_points (id, project_id, name, pk, z) VALUES (?, ?, ?, ?, ?)",
+                    (point.id, project_id, point.name, point.pk, point.z),
+                )
 
-        return {
-            "upstream": {
-                "name": row["hard_point_upstream_name"],
-                "x": row["hard_point_upstream_x"],
-                "z": row["hard_point_upstream_z"],
-            },
-            "downstream": {
-                "name": row["hard_point_downstream_name"],
-                "x": row["hard_point_downstream_x"],
-                "z": row["hard_point_downstream_z"],
-            },
-        }
+            if old_reference_pk is not None and new_reference_pk is not None:
+                self._shift_profile_distances(cursor, profiles, old_reference_pk - new_reference_pk)
 
-    def set_hard_points(
-        self, project_id: int,
-        upstream_name: Optional[str], upstream_x: Optional[float], upstream_z: Optional[float],
-        downstream_name: Optional[str], downstream_x: Optional[float], downstream_z: Optional[float],
-    ) -> None:
-        """Enregistre (ou met à jour) les points durs amont/aval d'un projet."""
-        with self._get_connection() as conn:
-            conn.execute(
-                """UPDATE projects SET
-                       hard_point_upstream_name = ?, hard_point_upstream_x = ?, hard_point_upstream_z = ?,
-                       hard_point_downstream_name = ?, hard_point_downstream_x = ?, hard_point_downstream_z = ?
-                   WHERE id = ?""",
-                (upstream_name, upstream_x, upstream_z,
-                 downstream_name, downstream_x, downstream_z, project_id),
-            )
+            report = self._refresh_slopes(cursor, project_id)
             conn.commit()
+        self.last_slope_report = report
+        return report
+
+    @staticmethod
+    def _shift_profile_distances(cursor: sqlite3.Cursor, profiles: List[sqlite3.Row], delta: float) -> None:
+        """Décale de `delta` la distance de tous les profils (même position réelle, nouvelle
+        référence). Mise à jour profil par profil dans le sens qui évite toute collision
+        transitoire avec la contrainte UNIQUE (scénario, distance)."""
+        if abs(delta) < 1e-12:
+            return
+        ordered = sorted(profiles, key=lambda r: r["distance"], reverse=delta > 0)
+        for row in ordered:
+            cursor.execute("UPDATE profiles SET distance = ? WHERE id = ?", (row["distance"] + delta, row["id"]))
+
+    def _refresh_slopes(self, cursor: sqlite3.Cursor, project_id: int,
+                        profile_ids: Optional[List[int]] = None) -> SlopeReport:
+        """Recalcule la pente des profils en pente calculée (tous ceux du projet, ou ceux de
+        `profile_ids`) à partir des points durs ; un profil sans mode enregistré est en pente
+        calculée. Si aucun calcul n'est possible, le profil passe en pente imposée (sa
+        valeur actuelle est conservée). Les profils en pente imposée ne sont pas touchés."""
+        points = self._hard_points(cursor, project_id)
+        report = SlopeReport()
+        for row in self._project_profiles(cursor, project_id):
+            if profile_ids is not None and row["id"] not in profile_ids:
+                continue
+            label = f"{row['scenario_name']} › {row['name']}"
+            params = json.loads(row["project_params"]) if row["project_params"] else {}
+            if params.get("slope_mode") == SLOPE_IMPOSED:
+                report.imposed_kept.append(label)
+                continue
+
+            slope, _segment, reason = computed_slope(points, row["distance"])
+            if slope is None:
+                params["slope_mode"] = SLOPE_IMPOSED
+                report.switched_to_imposed.append((label, reason))
+            else:
+                if params.get("slope") is None or abs(params["slope"] - slope) > 1e-12:
+                    report.updated.append(label)
+                params["slope"] = slope
+                params["slope_mode"] = SLOPE_COMPUTED
+            cursor.execute("UPDATE profiles SET project_params = ? WHERE id = ?",
+                           (json.dumps(params), row["id"]))
+        return report
+
+    def _check_distance_in_zone(self, cursor: sqlite3.Cursor, scenario_id: int, distance: float,
+                                profile_name: Optional[str] = None) -> None:
+        """ValueError si `distance` est hors de la zone couverte par les points durs du
+        projet du scénario (aucune contrainte sans zone)."""
+        row = cursor.execute("SELECT project_id FROM scenarios WHERE id = ?", (scenario_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
+        zone = distance_zone(self._hard_points(cursor, row["project_id"]))
+        if zone is not None and not (zone[0] - 1e-6 <= distance <= zone[1] + 1e-6):
+            who = f"Profil « {profile_name} » : " if profile_name else ""
+            raise ValueError(
+                f"{who}la distance {distance:g} m est hors de la zone couverte par les points "
+                f"durs du projet ({zone[0]:g} à {zone[1]:g} m)."
+            )
+
+    def _project_of_scenario(self, cursor: sqlite3.Cursor, scenario_id: int) -> int:
+        row = cursor.execute("SELECT project_id FROM scenarios WHERE id = ?", (scenario_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
+        return row["project_id"]
+
+    def profile_slope_info(self, profile_id: int) -> Dict:
+        """Pente calculée d'un profil pour l'onglet Hydraulique : {"slope": valeur ou None,
+        "segment": libellé du tronçon ou None, "reason": pourquoi aucun calcul n'est possible}."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            row = cursor.execute(
+                """SELECT p.distance, s.project_id FROM profiles p
+                   JOIN scenarios s ON s.id = p.scenario_id WHERE p.id = ?""", (profile_id,)
+            ).fetchone()
+            if row is None:
+                return {"slope": None, "segment": None, "reason": "profil introuvable"}
+            slope, segment, reason = computed_slope(self._hard_points(cursor, row["project_id"]), row["distance"])
+        return {"slope": slope, "segment": segment.label if segment else None, "reason": reason}
 
     def duplicate_project(self, project_id: int, new_name: str) -> int:
         """Duplique un projet (points durs compris), tous ses scénarios et tous leurs
@@ -464,6 +653,11 @@ class DatabaseManager:
             except sqlite3.IntegrityError:
                 raise ValueError(self._project_exists_message(conn, new_name))
             new_project_id = cursor.lastrowid
+            cursor.execute(
+                """INSERT INTO hard_points (project_id, name, pk, z)
+                   SELECT ?, name, pk, z FROM hard_points WHERE project_id = ? ORDER BY id""",
+                (new_project_id, project_id),
+            )
 
             scenarios = cursor.execute(
                 "SELECT id, name FROM scenarios WHERE project_id = ? ORDER BY id", (project_id,)
@@ -603,6 +797,7 @@ class DatabaseManager:
             if row:
                 return row["id"]
 
+            self._check_distance_in_zone(cursor, scenario_id, distance)
             try:
                 cursor.execute(
                     """INSERT INTO profiles (scenario_id, name, distance, existing_data, project_params)
@@ -613,8 +808,19 @@ class DatabaseManager:
                 if "FOREIGN KEY" in str(e):
                     raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
                 raise ValueError(f"La distance {distance} existe déjà dans ce scénario.")
+            profile_id = cursor.lastrowid
+            # Nouveau profil : pente calculée d'après les points durs. Sans zone (moins de
+            # deux points durs complets), il naît en pente imposée, sans message : il n'a
+            # jamais été en pente calculée.
+            project_id = self._project_of_scenario(cursor, scenario_id)
+            if distance_zone(self._hard_points(cursor, project_id)) is None:
+                cursor.execute("UPDATE profiles SET project_params = ? WHERE id = ?",
+                               (json.dumps({"slope_mode": SLOPE_IMPOSED}), profile_id))
+                self.last_slope_report = SlopeReport()
+            else:
+                self.last_slope_report = self._refresh_slopes(cursor, project_id, [profile_id])
             conn.commit()
-            return cursor.lastrowid
+            return profile_id
 
     def save_profile_state(self, profile_id: int, existing_data: List[Dict], project_params: Dict) -> None:
         """Auto-save : Met à jour les données d'un profil spécifique."""
@@ -625,20 +831,29 @@ class DatabaseManager:
         """Charge l'état d'un profil (Points existants et Paramètres projet)."""
         return self._load_state("profiles", profile_id)
 
-    def rename_profile(self, profile_id: int, new_name: str, new_distance: float) -> None:
-        """Renomme un profil et met à jour sa distance au point dur amont."""
+    def rename_profile(self, profile_id: int, new_name: str, new_distance: float) -> SlopeReport:
+        """Renomme un profil et met à jour sa distance au premier point dur (bornée par la
+        zone couverte par les points durs). Sa pente calculée suit la nouvelle distance ;
+        le bilan est retourné (et conservé dans last_slope_report)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            row = cursor.execute("SELECT scenario_id FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Le profil (ID {profile_id}) est introuvable.")
+            self._check_distance_in_zone(cursor, row["scenario_id"], new_distance)
             try:
                 cursor.execute(
                     "UPDATE profiles SET name = ?, distance = ? WHERE id = ?",
                     (new_name, new_distance, profile_id)
                 )
-                conn.commit()
             except sqlite3.IntegrityError:
                 raise ValueError(
                     f"Le nom '{new_name}' ou la distance {new_distance} existe déjà dans ce scénario."
                 )
+            report = self._refresh_slopes(cursor, self._project_of_scenario(cursor, row["scenario_id"]), [profile_id])
+            conn.commit()
+        self.last_slope_report = report
+        return report
 
     def duplicate_profile(self, profile_id: int, new_name: str, new_distance: float) -> int:
         """Duplique un profil dans le même scénario, sous un nouveau nom et une nouvelle
@@ -660,21 +875,34 @@ class DatabaseManager:
                     f"Le nom '{new_name}' ou la distance {new_distance} existe déjà dans ce scénario."
                 )
 
+        # Copie avec ses paramètres, dont le mode de pente ; une pente calculée est ensuite
+        # recalculée pour la nouvelle distance.
         existing_data, project_params = self.load_profile_state(profile_id)
-        new_profile_id = self.create_or_get_profile(scenario_id, new_name, new_distance)
-        self.save_profile_state(new_profile_id, existing_data, project_params)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            self._check_distance_in_zone(cursor, scenario_id, new_distance)
+            cursor.execute(
+                """INSERT INTO profiles (scenario_id, name, distance, existing_data, project_params)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (scenario_id, new_name, new_distance, json.dumps(existing_data), json.dumps(project_params)),
+            )
+            new_profile_id = cursor.lastrowid
+            self.last_slope_report = self._refresh_slopes(
+                cursor, self._project_of_scenario(cursor, scenario_id), [new_profile_id]
+            )
+            conn.commit()
         return new_profile_id
 
-    def get_longitudinal_data(self, scenario_id: int) -> List[Tuple[float, float, float]]:
-        """Pour le profil en long d'un scénario : un triplet (distance au point dur amont,
-        altitude mini du TN existant, anchor_z du projet) par profil du scénario, trié par
-        distance croissante. Les profils sans points existants, ou sans paramètres projet
+    def get_longitudinal_data(self, scenario_id: int) -> List[Tuple[float, float, float, str]]:
+        """Pour le profil en long d'un scénario : un quadruplet (distance au premier point
+        dur, altitude mini du TN existant, anchor_z du projet, nom du profil) par profil du
+        scénario, trié par distance croissante. Les profils sans points existants, ou sans paramètres projet
         enregistrés, renvoient None sur la valeur manquante plutôt que d'être exclus
         entièrement."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT distance, existing_data, project_params FROM profiles WHERE scenario_id = ?",
+                "SELECT name, distance, existing_data, project_params FROM profiles WHERE scenario_id = ?",
                 (scenario_id,)
             )
             rows = cursor.fetchall()
@@ -690,7 +918,7 @@ class DatabaseManager:
             project_params = json.loads(row["project_params"]) if row["project_params"] else {}
             anchor_z_project = project_params.get("anchor_z")
 
-            result.append((distance, min_z_existing, anchor_z_project))
+            result.append((distance, min_z_existing, anchor_z_project, row["name"]))
 
         result.sort(key=lambda t: t[0])
         return result
@@ -857,7 +1085,8 @@ class DatabaseManager:
                 "SELECT id FROM scenarios WHERE project_id = ? ORDER BY id", (project_id,)
             )]
         return {
-            "name": row["name"], "hard_points": self.get_hard_points(project_id),
+            "name": row["name"],
+            "hard_points": [{k: p[k] for k in ("name", "pk", "z")} for p in self.get_hard_points(project_id)],
             "scenarios": [self._export_scenario_fields(sid) for sid in scenario_ids],
         }
 
@@ -880,7 +1109,8 @@ class DatabaseManager:
         scénarios et tous leurs profils."""
         return {"type": "project", "version": _EXPORT_VERSION, **self._export_project_fields(project_id)}
 
-    def _import_profile_fields_into_scenario(self, cursor: sqlite3.Cursor, scenario_id: int, fields: Dict) -> int:
+    def _import_profile_fields_into_scenario(self, cursor: sqlite3.Cursor, scenario_id: int, fields: Dict,
+                                             check_zone: bool = True) -> int:
         """Insère un profil (forme "profile", cf. _export_profile_fields) dans un scénario
         comme nouveau profil, en résolvant les collisions de nom et de distance avec ceux
         déjà présents. Utilisée à l'intérieur d'une transaction déjà ouverte par l'appelant
@@ -897,6 +1127,8 @@ class DatabaseManager:
             {r["distance"] for r in existing}, desired_distance if desired_distance is not None else 0.0
         )
 
+        if check_zone:
+            self._check_distance_in_zone(cursor, scenario_id, distance, name)
         cursor.execute(
             """INSERT INTO profiles (scenario_id, name, distance, existing_data, project_params)
                VALUES (?, ?, ?, ?, ?)""",
@@ -905,7 +1137,8 @@ class DatabaseManager:
         )
         return cursor.lastrowid
 
-    def _import_scenario_fields_into_project(self, cursor: sqlite3.Cursor, project_id: int, fields: Dict) -> int:
+    def _import_scenario_fields_into_project(self, cursor: sqlite3.Cursor, project_id: int, fields: Dict,
+                                             check_zone: bool = True) -> int:
         """Insère un scénario (forme "scenario", cf. _export_scenario_fields) et tous ses
         profils dans un projet, en résolvant les collisions de nom de scénario. Chaque
         profil est ensuite inséré un par un via _import_profile_fields_into_scenario, qui
@@ -919,8 +1152,16 @@ class DatabaseManager:
         cursor.execute("INSERT INTO scenarios (project_id, name) VALUES (?, ?)", (project_id, name))
         scenario_id = cursor.lastrowid
 
+        # Profils hors de la zone couverte par les points durs : tout l'import est refusé,
+        # avec la liste complète (et non au premier profil en défaut).
+        out_of_zone = []
         for profile_fields in fields.get("profiles", []):
-            self._import_profile_fields_into_scenario(cursor, scenario_id, profile_fields)
+            try:
+                self._import_profile_fields_into_scenario(cursor, scenario_id, profile_fields, check_zone)
+            except ValueError as e:
+                out_of_zone.append(str(e))
+        if out_of_zone:
+            raise ValueError("Import refusé :\n" + "\n".join(out_of_zone))
 
         return scenario_id
 
@@ -934,6 +1175,9 @@ class DatabaseManager:
             if cursor.execute("SELECT 1 FROM scenarios WHERE id = ?", (scenario_id,)).fetchone() is None:
                 raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
             new_id = self._import_profile_fields_into_scenario(cursor, scenario_id, data)
+            self.last_slope_report = self._refresh_slopes(
+                cursor, self._project_of_scenario(cursor, scenario_id), [new_id]
+            )
             conn.commit()
             return new_id
 
@@ -962,6 +1206,8 @@ class DatabaseManager:
             if cursor.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
                 raise ValueError(f"Le projet (ID {project_id}) est introuvable.")
             scenario_id = self._import_scenario_fields_into_project(cursor, project_id, data)
+            imported = [r["id"] for r in cursor.execute("SELECT id FROM profiles WHERE scenario_id = ?", (scenario_id,))]
+            self.last_slope_report = self._refresh_slopes(cursor, project_id, imported)
             conn.commit()
             return scenario_id
 
@@ -975,22 +1221,38 @@ class DatabaseManager:
             existing_names = {r["name"] for r in cursor.execute("SELECT name FROM projects")}
             name = self._resolve_name_collision(existing_names, data["name"])
 
-            hard_points = data.get("hard_points") or {}
-            upstream = hard_points.get("upstream") or {}
-            downstream = hard_points.get("downstream") or {}
-            cursor.execute(
-                f"""INSERT INTO projects (name, {', '.join(_HARD_POINT_COLUMNS)})
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (name, upstream.get("name"), upstream.get("x"), upstream.get("z"),
-                 downstream.get("name"), downstream.get("x"), downstream.get("z")),
-            )
+            cursor.execute("INSERT INTO projects (name) VALUES (?)", (name,))
             project_id = cursor.lastrowid
+            for point in self._hard_points_from_export(data.get("hard_points")):
+                cursor.execute(
+                    "INSERT INTO hard_points (project_id, name, pk, z) VALUES (?, ?, ?, ?)",
+                    (project_id, point.get("name"), point.get("pk"), point.get("z")),
+                )
 
+            # Les profils viennent avec leurs propres points durs : pas de refus hors zone ;
+            # un profil hors zone passe simplement en pente imposée (cf. _refresh_slopes).
             for scenario_fields in data.get("scenarios", []):
-                self._import_scenario_fields_into_project(cursor, project_id, scenario_fields)
+                self._import_scenario_fields_into_project(cursor, project_id, scenario_fields, check_zone=False)
 
+            self.last_slope_report = self._refresh_slopes(cursor, project_id)
             conn.commit()
             return project_id
+
+    @staticmethod
+    def _hard_points_from_export(hard_points) -> List[Dict]:
+        """Points durs d'un fichier d'export : liste [{name, pk, z}] (version 2), ou ancien
+        couple {"upstream": {name, x, z}, "downstream": {...}} (version 1), converti en
+        liste (amont puis aval, points entièrement vides ignorés)."""
+        if isinstance(hard_points, list):
+            return [p for p in hard_points if isinstance(p, dict)]
+        if isinstance(hard_points, dict):
+            converted = []
+            for side in ("upstream", "downstream"):
+                point = hard_points.get(side) or {}
+                if any(point.get(k) is not None for k in ("name", "x", "z")):
+                    converted.append({"name": point.get("name"), "pk": point.get("x"), "z": point.get("z")})
+            return converted
+        return []
 
     def copy_draft_to_scenario(self, draft_id: int, scenario_id: int) -> int:
         """Copie un brouillon de la zone Draft vers un scénario, comme nouveau profil
@@ -1003,7 +1265,16 @@ class DatabaseManager:
             cursor = conn.cursor()
             if cursor.execute("SELECT 1 FROM scenarios WHERE id = ?", (scenario_id,)).fetchone() is None:
                 raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
+            # Un brouillon est toujours en pente imposée (pas de points durs) ; copié dans un
+            # scénario dont le projet a des points durs, il passe en pente calculée.
+            project_id = self._project_of_scenario(cursor, scenario_id)
+            has_zone = distance_zone(self._hard_points(cursor, project_id)) is not None
+            fields["project_params"] = {**(fields.get("project_params") or {}),
+                                        "slope_mode": SLOPE_COMPUTED if has_zone else SLOPE_IMPOSED}
             new_id = self._import_profile_fields_into_scenario(cursor, scenario_id, fields)
+            self.last_slope_report = self._refresh_slopes(
+                cursor, self._project_of_scenario(cursor, scenario_id), [new_id]
+            )
             conn.commit()
             return new_id
 

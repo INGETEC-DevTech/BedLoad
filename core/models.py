@@ -72,6 +72,9 @@ class ProjectParameters:
     
     # --- Géométrie (Nouveau) ---
     slope: float = 0.005
+    # Pente calculée à partir des points durs du projet ("computed"), ou saisie à la main
+    # ("imposed") : cf. core.hard_points.
+    slope_mode: str = "computed"
     
     # --- Hydraulique ---
     calc_mode: str = "Q_FROM_H"  # "Q_FROM_H" (Calculer Débit) ou "H_FROM_Q" (Calculer Hauteur)

@@ -1,22 +1,21 @@
 # ui/dialogs/hard_points_dialog.py
-from typing import Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QRegularExpression
-from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QGroupBox, QLineEdit,
-                              QDialogButtonBox, QLabel)
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+                             QHeaderView, QPushButton, QDialogButtonBox, QLabel, QAbstractItemView)
 
+from core.hard_points import HardPoint, complete_points, format_slope, validate_hard_points
 from ui import theme
 
-# Nombre signé, au plus 3 décimales, séparateur point ou virgule ; vide autorisé (= non
-# renseigné). Mêmes bornes et précision que les anciennes saisies (±1 000 000, 3 décimales).
-_NUMBER_PATTERN = QRegularExpression(r"^-?\d{0,7}([.,]\d{0,3})?$")
 _MAX_ABS_VALUE = 1_000_000
+
+COL_NAME, COL_PK, COL_Z, COL_SLOPE = range(4)
 
 
 def _format_value(value: Optional[float]) -> str:
-    """Valeur en base -> texte du champ : vide si non renseignée, sinon jusqu'à 3 décimales
-    sans zéros inutiles (une valeur 0 réellement enregistrée s'affiche bien "0")."""
+    """Valeur en base -> texte de cellule : vide si non renseignée, sinon jusqu'à 3
+    décimales sans zéros inutiles (une valeur 0 réellement enregistrée s'affiche "0")."""
     if value is None:
         return ""
     text = f"{value:.3f}".rstrip("0").rstrip(".")
@@ -24,9 +23,9 @@ def _format_value(value: Optional[float]) -> str:
 
 
 def _parse_value(text: str) -> Optional[float]:
-    """Texte du champ -> valeur à enregistrer : None si vide. Lève ValueError si le texte
-    n'est pas (encore) un nombre complet, ex. "-" seul."""
-    text = text.strip()
+    """Texte de cellule -> valeur : None si vide ; virgule ou point décimal. ValueError si
+    ce n'est pas un nombre (ou hors de ±1 000 000)."""
+    text = (text or "").strip()
     if not text:
         return None
     value = float(text.replace(",", "."))
@@ -36,43 +35,59 @@ def _parse_value(text: str) -> Optional[float]:
 
 
 class HardPointsDialog(QDialog):
-    """Dialogue de saisie/édition des deux points durs (amont/aval) d'un projet : chacun
-    est un repère de terrain fixe, avec un nom et des coordonnées (PK, Z ; le PK est
-    stocké sous la clé "x", seul le libellé affiché change). La distance 0
-    des profils du projet correspond, par convention, à la position du point dur amont
-    (rien ici ne calcule ou ne recale automatiquement cette distance à partir des
-    coordonnées : ce sont deux informations indépendantes).
+    """Saisie/édition de la liste des points durs d'un projet (nom, PK, Z), communs à tous
+    ses scénarios. Le premier point (plus petit PK) est la référence "distance 0" des
+    profils ; la pente de chaque tronçon entre deux points voisins est affichée (m/m).
 
-    PK et Z sont des champs texte et non des QDoubleSpinBox : un spinbox ne peut pas être
-    vide et enregistrait 0 pour un champ jamais rempli, faisant apparaître un point dur
-    fantôme à Z = 0 sur le profil en long. Un champ vide est enregistré "non renseigné"
-    (None) ; un point dur incomplet n'est alors pas tracé (cf. build_longitudinal_profile)."""
+    Les erreurs (cf. core.hard_points.validate_hard_points) s'affichent pendant la saisie
+    et bloquent la validation. `validator`, s'il est fourni, fait la vérification complète
+    pour le projet (dont : un déplacement qui ferait sortir des profils existants de la
+    zone couverte), sans rien enregistrer ; à défaut, seules les règles propres à la liste
+    sont vérifiées."""
 
-    def __init__(self, parent=None, upstream: dict = None, downstream: dict = None):
+    def __init__(self, parent=None, points: Optional[List[Dict]] = None,
+                 validator: Optional[Callable[[List[Dict]], List[str]]] = None):
         super().__init__(parent)
         self.setWindowTitle("Points durs du projet")
-
-        upstream = upstream or {}
-        downstream = downstream or {}
+        self.setMinimumSize(620, 420)
+        self._validator = validator
+        self._loading = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(theme.SPACE_MD)
 
         hint = QLabel(
-            "Repères de terrain fixes du projet. La distance 0 des profils correspond, "
-            "par convention, à la position du point dur amont. Un champ laissé vide est "
-            "enregistré comme non renseigné."
+            "Repères de terrain fixes du projet, communs à tous ses scénarios. Le premier point "
+            "(plus petit PK) est la référence « distance 0 » des profils. Le Z doit baisser "
+            "d'un point au suivant : la pente de chaque tronçon sert de pente hydraulique aux "
+            "profils qu'il encadre."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(theme.qss("color: $TEXT_MUTED; font-size: ${FONT_SIZE_SM}px;"))
         layout.addWidget(hint)
 
-        self.name_upstream, self.x_upstream, self.z_upstream = self._add_group(
-            layout, "Point dur amont", upstream
-        )
-        self.name_downstream, self.x_downstream, self.z_downstream = self._add_group(
-            layout, "Point dur aval", downstream
-        )
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Nom", "PK (m)", "Z (m NGF)", "Pente du tronçon aval (m/m)"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        for col in (COL_PK, COL_Z, COL_SLOPE):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table, 1)
+
+        buttons_row = QHBoxLayout()
+        self.btn_add = QPushButton("+ Ajouter un point")
+        self.btn_remove = QPushButton("Supprimer le point")
+        buttons_row.addWidget(self.btn_add)
+        buttons_row.addWidget(self.btn_remove)
+        buttons_row.addStretch(1)
+        layout.addLayout(buttons_row)
+
+        self.lbl_errors = QLabel()
+        self.lbl_errors.setWordWrap(True)
+        self.lbl_errors.setStyleSheet(theme.qss("color: $DANGER;"))
+        layout.addWidget(self.lbl_errors)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -81,54 +96,107 @@ class HardPointsDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-        for edit in self._number_edits():
-            edit.textChanged.connect(self._update_ok_button)
-        self._update_ok_button()
+        self.btn_add.clicked.connect(self.add_point)
+        self.btn_remove.clicked.connect(self.remove_selected_point)
+        self.table.itemChanged.connect(lambda _item: self.refresh())
 
-    def _number_edits(self):
-        return (self.x_upstream, self.z_upstream, self.x_downstream, self.z_downstream)
+        self._loading = True
+        for point in points or []:
+            self._append_row(point)
+        self._loading = False
+        self.refresh()
 
-    def _make_number_edit(self, value: Optional[float]) -> QLineEdit:
-        edit = QLineEdit(_format_value(value))
-        edit.setValidator(QRegularExpressionValidator(_NUMBER_PATTERN, edit))
-        edit.setPlaceholderText("non renseigné")
-        return edit
+    # --- Lignes ---
 
-    def _add_group(self, layout: QVBoxLayout, title: str, values: dict):
-        grp = QGroupBox(title)
-        form = QFormLayout(grp)
+    def _append_row(self, point: Dict) -> int:
+        # Signaux coupés le temps de créer les 4 cellules : Qt signale une modification dès
+        # la première, et la lecture du tableau tomberait sur des cellules pas encore créées.
+        self.table.blockSignals(True)
+        try:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            name_item = QTableWidgetItem(point.get("name") or "")
+            name_item.setData(Qt.ItemDataRole.UserRole, point.get("id"))
+            self.table.setItem(row, COL_NAME, name_item)
+            self.table.setItem(row, COL_PK, QTableWidgetItem(_format_value(point.get("pk"))))
+            self.table.setItem(row, COL_Z, QTableWidgetItem(_format_value(point.get("z"))))
+            slope_item = QTableWidgetItem("")
+            slope_item.setFlags(slope_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, COL_SLOPE, slope_item)
+        finally:
+            self.table.blockSignals(False)
+        return row
 
-        name_edit = QLineEdit(values.get("name") or "")
-        x_edit = self._make_number_edit(values.get("x"))
-        z_edit = self._make_number_edit(values.get("z"))
+    def _cell_text(self, row: int, col: int) -> str:
+        item = self.table.item(row, col)
+        return item.text() if item is not None else ""
 
-        form.addRow("Nom :", name_edit)
-        form.addRow("PK (m) :", x_edit)
-        form.addRow("Z (m NGF) :", z_edit)
+    def add_point(self):
+        row = self._append_row({})
+        self.table.setCurrentCell(row, COL_NAME)
+        self.table.editItem(self.table.item(row, COL_NAME))
+        self.refresh()
 
-        layout.addWidget(grp)
-        return name_edit, x_edit, z_edit
+    def remove_selected_point(self):
+        rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.table.removeRow(row)
+        self.refresh()
 
-    def _update_ok_button(self, _=None):
-        """OK n'est actif que si chaque champ numérique est vide ou contient un nombre
-        complet (le validateur laisse passer les saisies en cours comme "-" ou "12,")."""
-        valid = True
-        for edit in self._number_edits():
-            try:
-                _parse_value(edit.text())
-            except ValueError:
-                valid = False
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
+    # --- Lecture / validation ---
 
-    def get_values(self) -> dict:
-        """Retourne {"upstream": {"name","x","z"}, "downstream": {...}}, prêt à être
-        éclaté en arguments positionnels pour DatabaseManager.set_hard_points. Un nom ou
-        une coordonnée laissés vides sont renvoyés comme None (non renseignés)."""
-        def _pack(name_edit, x_edit, z_edit):
-            name = name_edit.text().strip()
-            return {"name": name or None, "x": _parse_value(x_edit.text()), "z": _parse_value(z_edit.text())}
+    def _read_rows(self) -> Tuple[List[Dict], List[str]]:
+        """(points saisis, erreurs de format) ; une valeur illisible est comptée vide."""
+        points, errors = [], []
+        for row in range(self.table.rowCount()):
+            name = self._cell_text(row, COL_NAME).strip() or None
+            values = {}
+            for key, col, label in (("pk", COL_PK, "PK"), ("z", COL_Z, "Z")):
+                try:
+                    values[key] = _parse_value(self._cell_text(row, col))
+                except ValueError:
+                    values[key] = None
+                    errors.append(f"Ligne {row + 1} : le {label} « {self._cell_text(row, col)} » "
+                                  "n'est pas un nombre.")
+            name_item = self.table.item(row, COL_NAME)
+            points.append({"id": name_item.data(Qt.ItemDataRole.UserRole) if name_item else None,
+                           "name": name, **values})
+        return points, errors
 
-        return {
-            "upstream": _pack(self.name_upstream, self.x_upstream, self.z_upstream),
-            "downstream": _pack(self.name_downstream, self.x_downstream, self.z_downstream),
-        }
+    def get_points(self) -> List[Dict]:
+        """Points saisis : [{"id" (None si nouveau), "name", "pk", "z"}], prêts pour
+        DatabaseManager.set_hard_points."""
+        return self._read_rows()[0]
+
+    def errors(self) -> List[str]:
+        points, errors = self._read_rows()
+        if self._validator is not None:
+            errors += self._validator(points)
+        else:
+            errors += validate_hard_points([HardPoint.from_dict(p) for p in points])
+        return errors
+
+    def refresh(self):
+        """Met à jour la pente affichée de chaque tronçon, les erreurs et le bouton OK."""
+        if self._loading:
+            return
+        points, _ = self._read_rows()
+        hard_points = [HardPoint(name=p["name"], pk=p["pk"], z=p["z"], id=row) for row, p in enumerate(points)]
+        ordered = complete_points(hard_points)
+        slopes = {}
+        for a, b in zip(ordered, ordered[1:]):
+            if b.pk != a.pk:
+                slopes[a.id] = format_slope((a.z - b.z) / (b.pk - a.pk)).replace(" m/m", "")
+
+        self.table.blockSignals(True)
+        complete_rows = {p.id for p in ordered}
+        for row in range(self.table.rowCount()):
+            slope_item = self.table.item(row, COL_SLOPE)
+            if slope_item is not None:
+                slope_item.setText(slopes.get(row, "—" if row in complete_rows else ""))
+        self.table.blockSignals(False)
+
+        errors = self.errors()
+        self.lbl_errors.setText("\n".join(f"• {e}" for e in errors))
+        self.lbl_errors.setVisible(bool(errors))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not errors)

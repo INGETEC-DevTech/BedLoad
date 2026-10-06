@@ -8,14 +8,15 @@ from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
 from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME
+from core.hard_points import SlopeReport
 from ui.dialogs.archives_dialog import ArchivesDialog
 from ui.dialogs.hard_points_dialog import HardPointsDialog
 from ui.dialogs.scenario_dialog import ScenarioDialog
 from ui import theme
 
-# Bornes/format partagés par toutes les saisies de "distance au point dur amont" (nouveau
-# profil, renommage, duplication) : cohérent avec la plage large déjà utilisée pour les
-# coordonnées de points durs (HardPointsDialog).
+# Bornes/format des saisies de "distance au premier point dur" (nouveau profil, renommage,
+# duplication) quand le projet n'a pas encore de zone couverte par ses points durs ; sinon,
+# la saisie est bornée par cette zone (cf. Sidebar._prompt_distance).
 _DISTANCE_MIN = -1_000_000.0
 _DISTANCE_MAX = 1_000_000.0
 _DISTANCE_DECIMALS = 3
@@ -259,6 +260,9 @@ class Sidebar(QWidget):
     selection_cleared = pyqtSignal()
     # Les libellés du bandeau de contexte ont changé (renommage de l'élément ouvert...)
     context_changed = pyqtSignal()
+    # Points durs ou distance d'un profil modifiés : pentes calculées et positions des
+    # profils de ce projet ont pu changer (MainWindow recharge le profil ouvert).
+    project_data_changed = pyqtSignal(int)
 
     def __init__(self, db_manager: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -586,25 +590,47 @@ class Sidebar(QWidget):
         self._prompt_hard_points(project_id)
         self._select((SCENARIO, scenario_id))
 
-    def _prompt_hard_points(self, project_id: int, upstream: dict = None, downstream: dict = None):
-        """Ouvre le dialogue des points durs amont/aval et enregistre le résultat si
-        l'utilisateur valide."""
-        dialog = HardPointsDialog(self, upstream=upstream, downstream=downstream)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+    def _prompt_hard_points(self, project_id: int) -> bool:
+        """Ouvre le dialogue des points durs du projet (vérification complète pendant la
+        saisie, dont les profils existants qui sortiraient de la zone couverte) et
+        enregistre la liste si l'utilisateur valide. Affiche ensuite le bilan des pentes
+        recalculées. Retourne True si la liste a été enregistrée."""
+        points = self.db.get_hard_points(project_id)
+        while True:
+            dialog = HardPointsDialog(
+                self, points=points, validator=lambda pts: self.db.check_hard_points(project_id, pts)
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return False
+            points = dialog.get_points()
+            try:
+                report = self.db.set_hard_points(project_id, points)
+            except ValueError as e:
+                # Cas limite (la vérification pendant la saisie aurait dû l'empêcher) : on
+                # rouvre le dialogue avec la saisie de l'utilisateur.
+                QMessageBox.warning(self, "Points durs refusés", str(e))
+                continue
+            self._show_slope_report(report)
+            self.project_data_changed.emit(project_id)
+            return True
 
-        values = dialog.get_values()
-        self.db.set_hard_points(
-            project_id,
-            values["upstream"]["name"], values["upstream"]["x"], values["upstream"]["z"],
-            values["downstream"]["name"], values["downstream"]["x"], values["downstream"]["z"],
-        )
+    def _show_slope_report(self, report, only_switches: bool = False):
+        """Message récapitulatif des pentes recalculées (cf. SlopeReport.message). Avec
+        `only_switches`, seulement si des profils sont passés en pente imposée (création,
+        import ou copie : une pente calculée attendue ne mérite pas de message)."""
+        if only_switches and not report.switched_to_imposed:
+            return
+        message = report.message()
+        if message:
+            QMessageBox.information(self, "Pentes hydrauliques", message)
 
     def edit_hard_points(self, data: dict):
         """Édite les points durs d'un projet déjà existant (menu contextuel). Ils sont
         communs à tous les scénarios du projet."""
-        hard_points = self.db.get_hard_points(data["id"]) or {"upstream": {}, "downstream": {}}
-        self._prompt_hard_points(data["id"], hard_points["upstream"], hard_points["downstream"])
+        if not self._prompt_hard_points(data["id"]):
+            return
+        # Les distances des profils ont pu être décalées (nouveau premier point dur).
+        self.refresh_tree()
         # Le profil en long d'un scénario de ce projet affiche ces points : on le redessine.
         if self._active_path and self._active_path[-1]["type"] == SCENARIO \
                 and self._active_path[0]["id"] == data["id"]:
@@ -716,14 +742,23 @@ class Sidebar(QWidget):
 
     # --- Profils ---
 
-    def _distance_label(self, project_id: int) -> str:
-        """Libellé de la saisie de distance, mentionnant le point dur amont s'il est déjà
-        nommé, pour rappeler à quoi cette distance est relative."""
-        hard_points = self.db.get_hard_points(project_id)
-        upstream_name = hard_points["upstream"]["name"] if hard_points else None
-        if upstream_name:
-            return f"Distance au point dur amont « {upstream_name} » (m) :"
-        return "Distance au point dur amont (m) :"
+    def _prompt_distance(self, title: str, project_id: int, current: float = 0.0) -> Optional[float]:
+        """Saisie de la distance d'un profil au premier point dur, bornée par la zone
+        couverte par les points durs du projet (libre faute de zone). None si annulée."""
+        points = [p for p in self.db.get_hard_points(project_id) if p["pk"] is not None and p["z"] is not None]
+        zone = self.db.get_distance_zone(project_id)
+        reference = f"au premier point dur « {points[0]['name']} »" if points and points[0]["name"] \
+            else "au premier point dur"
+        if zone is None:
+            label = f"Distance {reference} (m) :"
+            low, high = _DISTANCE_MIN, _DISTANCE_MAX
+        else:
+            label = f"Distance {reference} (m), entre {zone[0]:g} et {zone[1]:g} :"
+            low, high = zone
+        distance, ok = QInputDialog.getDouble(
+            self, title, label, min(max(current, low), high), low, high, _DISTANCE_DECIMALS,
+        )
+        return distance if ok else None
 
     def add_profile(self):
         """Nouveau profil dans le scénario sélectionné (ou celui du profil sélectionné),
@@ -760,11 +795,8 @@ class Sidebar(QWidget):
         if name is None:
             return
 
-        distance, ok = QInputDialog.getDouble(
-            self, "Nouveau Profil", self._distance_label(project_id),
-            0.0, _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
-        )
-        if not ok:
+        distance = self._prompt_distance("Nouveau Profil", project_id)
+        if distance is None:
             return
 
         try:
@@ -782,18 +814,19 @@ class Sidebar(QWidget):
         if new_name is None:
             return
 
-        new_distance, ok = QInputDialog.getDouble(
-            self, "Renommer le profil", self._distance_label(data["project_id"]),
-            data.get("distance", 0.0), _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
-        )
-        if not ok:
+        new_distance = self._prompt_distance("Renommer le profil", data["project_id"], data.get("distance", 0.0))
+        if new_distance is None:
             return
 
         try:
-            self.db.rename_profile(data["id"], new_name, new_distance)
-            self.refresh_tree()
+            report = self.db.rename_profile(data["id"], new_name, new_distance)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+            return
+        self.refresh_tree()
+        # Distance modifiée : la pente calculée du profil a pu changer.
+        self._show_slope_report(report)
+        self.project_data_changed.emit(data["project_id"])
 
     def duplicate_profile(self, data: dict, current_name: str):
         """Demande un nouveau nom (texte libre) et une nouvelle distance au point dur
@@ -802,11 +835,8 @@ class Sidebar(QWidget):
         if new_name is None:
             return
 
-        new_distance, ok = QInputDialog.getDouble(
-            self, "Dupliquer le profil", self._distance_label(data["project_id"]),
-            data.get("distance", 0.0), _DISTANCE_MIN, _DISTANCE_MAX, _DISTANCE_DECIMALS,
-        )
-        if not ok:
+        new_distance = self._prompt_distance("Dupliquer le profil", data["project_id"], data.get("distance", 0.0))
+        if new_distance is None:
             return
 
         try:
@@ -816,6 +846,7 @@ class Sidebar(QWidget):
             return
 
         self.refresh_tree()
+        self._show_slope_report(self.db.last_slope_report, only_switches=True)
         self._select((PROFILE, new_profile_id))
 
     # --- Zone Draft ---
@@ -945,6 +976,7 @@ class Sidebar(QWidget):
             QMessageBox.warning(self, "Erreur", str(e))
             return
         self.refresh_tree()
+        self._show_slope_report(self.db.last_slope_report, only_switches=True)
         self._select((PROFILE, new_profile_id))
 
     def _pick_import_file(self, expected_type: Optional[str] = None) -> Optional[dict]:
@@ -975,12 +1007,15 @@ class Sidebar(QWidget):
     def _run_import(self, action, node_type: str):
         """Exécute un import déjà résolu (fichier lu, destination choisie), rafraîchit
         l'arbre et sélectionne l'élément nouvellement créé."""
+        self.db.last_slope_report = SlopeReport()
         try:
             new_id = action()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
         self.refresh_tree()
+        # Profils importés en pente calculée mais sans calcul possible dans leur projet.
+        self._show_slope_report(self.db.last_slope_report, only_switches=True)
         self._select((node_type, new_id))
 
     def import_file(self):

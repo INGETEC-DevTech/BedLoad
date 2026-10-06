@@ -1,5 +1,6 @@
 # app.py
 import sys
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 import traceback
@@ -214,5 +215,6 @@ if __name__ == "__main__":
     
     window = MainWindow()
     window.showMaximized()
+    QTimer.singleShot(0, window.show_startup_messages)
     
     sys.exit(app.exec())

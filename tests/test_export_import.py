@@ -9,10 +9,26 @@ def make_db(tmp_path) -> DatabaseManager:
     return DatabaseManager(db_path=tmp_path / "test.db")
 
 
+def strip_mode(state):
+    """État d'un profil sans le mode de pente : après une duplication, un import ou un
+    renommage, le recalcul des pentes l'ajoute (ici "imposed", faute de points durs)."""
+    existing_data, params = state
+    return existing_data, {k: v for k, v in params.items() if k != "slope_mode"}
+
+
+def hard_points(db, project_id):
+    """Points durs du projet sans leurs identifiants en base."""
+    return [{k: p[k] for k in ("name", "pk", "z")} for p in db.get_hard_points(project_id)]
+
+
+TWO_POINTS = [{"name": "Pont Amont", "pk": 0.0, "z": 100.0}, {"name": "Pont Aval", "pk": 500.0, "z": 90.0}]
+
+
 def populate_profile(db, scenario_id, name="PK 0", distance=0.0):
     profile_id = db.create_or_get_profile(scenario_id, name, distance)
     existing_data = [{"X (m)": 0.0, "Z (m NGF)": 100.0}, {"X (m)": 10.0, "Z (m NGF)": 98.5}]
-    project_params = {"anchor_z": 98.0, "slope": 0.004, "ks_pro": 30.0,
+    # Pente imposée : sa valeur doit traverser intacte export, import et duplication.
+    project_params = {"anchor_z": 98.0, "slope": 0.004, "slope_mode": "imposed", "ks_pro": 30.0,
                        "calc_mode": "H_FROM_Q", "q_target": 12.0, "hydro_source": "project"}
     db.save_profile_state(profile_id, existing_data, project_params)
     return profile_id, existing_data, project_params
@@ -190,7 +206,7 @@ def test_scenario_file_round_trip_into_another_project(tmp_path):
     original_by_name = {p["name"]: p["id"] for p in original["profiles"]}
     imported_by_name = {p["name"]: p["id"] for p in imported["profiles"]}
     for name in original_by_name:
-        assert db.load_profile_state(imported_by_name[name]) == db.load_profile_state(original_by_name[name])
+        assert strip_mode(db.load_profile_state(imported_by_name[name])) == strip_mode(db.load_profile_state(original_by_name[name]))
         # Nouvelles lignes indépendantes, pas des références vers la source.
         assert imported_by_name[name] != original_by_name[name]
 
@@ -242,7 +258,7 @@ def test_import_scenario_into_unknown_project_raises(tmp_path):
 def test_export_project_includes_hard_points_and_all_scenarios(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
-    db.set_hard_points(project_id, "Pont Amont", 0.0, 100.0, "Pont Aval", 500.0, 90.0)
+    db.set_hard_points(project_id, TWO_POINTS)
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
     populate_profile(db, scenario_a, "PK 0", 0.0)
@@ -251,7 +267,7 @@ def test_export_project_includes_hard_points_and_all_scenarios(tmp_path):
     data = db.export_project(project_id)
 
     assert data["type"] == "project" and data["name"] == "P"
-    assert data["hard_points"] == db.get_hard_points(project_id)
+    assert data["hard_points"] == hard_points(db, project_id) == TWO_POINTS
     assert [s["name"] for s in data["scenarios"]] == ["A", "B"]
     assert all(len(s["profiles"]) == 1 for s in data["scenarios"])
 
@@ -259,7 +275,7 @@ def test_export_project_includes_hard_points_and_all_scenarios(tmp_path):
 def test_project_file_round_trip_creates_a_new_project(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("Rivière")
-    db.set_hard_points(project_id, "Pont Amont", 0.0, 100.0, "Pont Aval", 500.0, 90.0)
+    db.set_hard_points(project_id, TWO_POINTS)
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
     populate_profile(db, scenario_a, "PK 0", 0.0)
@@ -277,7 +293,7 @@ def test_project_file_round_trip_creates_a_new_project(tmp_path):
 
     original = projects["Rivière"]
     imported = projects["Rivière - importé"]
-    assert db.get_hard_points(imported["id"]) == db.get_hard_points(original["id"])
+    assert hard_points(db, imported["id"]) == hard_points(db, original["id"]) == TWO_POINTS
     assert [s["name"] for s in imported["scenarios"]] == [s["name"] for s in original["scenarios"]]
     for orig_s, imp_s in zip(original["scenarios"], imported["scenarios"]):
         assert sorted((p["name"], p["distance"]) for p in orig_s["profiles"]) == \
@@ -314,10 +330,7 @@ def test_import_project_with_empty_hard_points_and_no_scenarios(tmp_path):
 
     new_id = db.import_project(db.export_project(project_id))
 
-    assert db.get_hard_points(new_id) == {
-        "upstream": {"name": None, "x": None, "z": None},
-        "downstream": {"name": None, "x": None, "z": None},
-    }
+    assert db.get_hard_points(new_id) == []
     assert db.get_scenarios(new_id) == []
 
 
@@ -341,7 +354,7 @@ def test_copy_draft_to_scenario_leaves_the_draft_untouched(tmp_path):
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
     assert [p["name"] for p in profiles] == ["Essai berge"]
     assert profiles[0]["id"] == new_profile_id
-    assert db.load_profile_state(new_profile_id) == (existing_data, project_params)
+    assert strip_mode(db.load_profile_state(new_profile_id)) == (existing_data, project_params)
 
     # Et modifier la copie ensuite ne touche pas le brouillon.
     db.save_profile_state(new_profile_id, [{"X (m)": 9.0, "Z (m NGF)": 9.0}], {"anchor_z": 1.0})

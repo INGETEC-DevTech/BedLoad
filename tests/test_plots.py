@@ -1,55 +1,54 @@
-from core.longitudinal import LongitudinalProfile, HardPointMarker
+from core.longitudinal import build_longitudinal_profile, LongitudinalProfile
 from viz.plots import plot_longitudinal_profile, HARD_POINT_COLOR
 
-
-def _hard_point_traces(fig):
-    """Les traces de points durs sont les seules en mode marqueur+texte : les courbes
-    TN existant / projet sont toujours en mode lignes+marqueurs."""
-    return [trace for trace in fig.data if trace.mode == "markers+text"]
-
-
-def test_plot_longitudinal_profile_without_hard_points_has_no_marker_trace():
-    profile = LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0])
-
-    fig = plot_longitudinal_profile(profile)
-
-    assert _hard_point_traces(fig) == []
+POINTS = [
+    {"name": "A", "pk": 1000.0, "z": 50.0},
+    {"name": "B", "pk": 1200.0, "z": 46.0},
+    {"name": "C", "pk": 1400.0, "z": 45.0},
+]
 
 
-def test_plot_longitudinal_profile_draws_both_hard_points():
-    profile = LongitudinalProfile(
-        hard_point_upstream=HardPointMarker(distance=0.0, z=100.0, name="Pont Amont"),
-        hard_point_downstream=HardPointMarker(distance=500.0, z=90.0, name="Pont Aval"),
-    )
-
-    fig = plot_longitudinal_profile(profile)
-    traces = _hard_point_traces(fig)
-
-    assert len(traces) == 2
-    names = {trace.name for trace in traces}
-    assert names == {"Pont Amont", "Pont Aval"}
-
-    by_name = {trace.name: trace for trace in traces}
-    upstream_trace = by_name["Pont Amont"]
-    assert list(upstream_trace.x) == [0.0]
-    assert list(upstream_trace.y) == [100.0]
-    assert upstream_trace.marker.color == HARD_POINT_COLOR
-
-    downstream_trace = by_name["Pont Aval"]
-    assert list(downstream_trace.x) == [500.0]
-    assert list(downstream_trace.y) == [90.0]
+def _trace(fig, name):
+    return next((t for t in fig.data if t.name == name), None)
 
 
-def test_plot_longitudinal_profile_draws_only_the_hard_point_that_is_positioned():
-    """Un seul des deux points durs positionnable (l'autre reste None, cf.
-    core.longitudinal) : une seule trace de marqueur ajoutée."""
-    profile = LongitudinalProfile(
-        hard_point_upstream=HardPointMarker(distance=0.0, z=100.0, name="Amont"),
-        hard_point_downstream=None,
-    )
+def test_plot_longitudinal_profile_without_hard_points_has_no_hard_point_trace():
+    fig = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0]))
 
-    fig = plot_longitudinal_profile(profile)
-    traces = _hard_point_traces(fig)
+    assert _trace(fig, "Points durs") is None and _trace(fig, "Tronçons entre points durs") is None
+    assert not fig.layout.annotations
 
-    assert len(traces) == 1
-    assert traces[0].name == "Amont"
+
+def test_plot_longitudinal_profile_draws_every_hard_point_and_segment_slopes_in_m_per_m():
+    fig = plot_longitudinal_profile(build_longitudinal_profile([(100.0, 48.0, 47.5)], POINTS))
+
+    points = _trace(fig, "Points durs")
+    assert list(points.x) == [0.0, 200.0, 400.0] and list(points.y) == [50.0, 46.0, 45.0]
+    assert list(points.text) == ["A", "B", "C"]
+    assert points.marker.color == HARD_POINT_COLOR
+    assert list(_trace(fig, "Tronçons entre points durs").x) == [0.0, 200.0, 400.0]
+    slopes = [a for a in fig.layout.annotations if a.text.startswith("I = ")]
+    assert [a.text for a in slopes] == ["I = 0.0200 m/m", "I = 0.0050 m/m"]
+    assert [a.x for a in slopes] == [100.0, 300.0]
+
+
+def test_single_hard_point_is_drawn_without_segment():
+    fig = plot_longitudinal_profile(build_longitudinal_profile([], POINTS[:1]))
+
+    assert list(_trace(fig, "Points durs").x) == [0.0]
+    assert _trace(fig, "Tronçons entre points durs") is None
+    assert not [a for a in fig.layout.annotations if a.text.startswith("I = ")]
+
+
+def test_cross_section_names_are_shown_at_their_distance():
+    rows = [(100.0, 48.0, 47.5, "PK 1100"), (250.0, None, 46.0, "Seuil aval"), (300.0, None, None, "Vide")]
+
+    fig = plot_longitudinal_profile(build_longitudinal_profile(rows, POINTS))
+
+    names = [(a.x, a.text) for a in fig.layout.annotations if a.textangle == -90]
+    assert names == [(100.0, "PK 1100"), (250.0, "Seuil aval"), (300.0, "Vide")]
+    assert sorted(sh.x0 for sh in fig.layout.shapes if sh.type == "line") == [100.0, 250.0, 300.0]
+    # Au survol, chaque point porte le nom de son profil.
+    assert list(_trace(fig, "TN existant (thalweg)").text) == ["PK 1100"]
+    assert list(_trace(fig, "Projet (fond de lit)").text) == ["PK 1100", "Seuil aval"]
+
