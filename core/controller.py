@@ -1,5 +1,6 @@
 # core/controller.py
 from __future__ import annotations
+import math
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
@@ -12,6 +13,41 @@ from core.hydraulics import clip_to_bounds, resolve_hydraulic_result
 from core.longitudinal import build_longitudinal_profile
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 from ui import theme
+
+# Zones d'écoulement du calcul hydraulique (cf. ProjectParameters.hydro_zone).
+ALL_ZONE = "all"
+LEFT_ARM = "left_arm"
+RIGHT_ARM = "right_arm"
+CUSTOM_ZONE = "custom"
+
+
+def flow_zone_bounds(hydro_data: Dict[str, Any]) -> Tuple[str, Optional[Tuple[float, float]]]:
+    """Traduit le choix de zone d'écoulement en limites de calcul (cf. core.hydraulics.Bounds) :
+    - tout le profil : aucune limite, l'eau remplit tous les bras qu'atteint la cote d'eau ;
+    - un seul bras : une paroi sur la séparation des bras, le côté du bras choisi restant
+      borné par l'extrémité naturelle du profil (limite infinie) ;
+    - entre deux X : deux parois.
+    Retourne (zone, limites). Lève ValueError si les deux X sont incohérents : MainWindow
+    affiche alors le message à la place du graphique."""
+    zone = hydro_data.get('hydro_zone')
+    if zone is None:
+        # Profil enregistré avant le choix du bras : ancienne case "Limiter le calcul au lit
+        # compris entre deux X".
+        zone = CUSTOM_ZONE if hydro_data.get('hydro_bounds_enabled') else ALL_ZONE
+
+    if zone == CUSTOM_ZONE:
+        x_left = float(hydro_data.get('hydro_x_left', 0.0))
+        x_right = float(hydro_data.get('hydro_x_right', 0.0))
+        if not x_left < x_right:
+            raise ValueError(
+                "Zone de calcul : le X gauche doit être strictement inférieur au X droite."
+            )
+        return zone, (x_left, x_right)
+    if zone in (LEFT_ARM, RIGHT_ARM):
+        split = float(hydro_data.get('hydro_arm_split_x', 0.0))
+        return zone, ((-math.inf, split) if zone == LEFT_ARM else (split, math.inf))
+    return ALL_ZONE, None
+
 
 class ViewMode(Enum):
     EXISTING = "existing"
@@ -87,22 +123,38 @@ class ProfileController:
         show_overlay: bool,
     ) -> Optional[go.Figure]:
         hydro_source = hydro_data.get('hydro_source', 'project')
-        bounds = self._calc_bounds(hydro_data)
+        zone, bounds = flow_zone_bounds(hydro_data)
 
         if hydro_source == 'existing':
             section = self._to_cross_section(existing_data, name="Existant")
             if section is None:
                 return None
-            # Tirant d'eau mesuré depuis le fond du lit de calcul (le point le plus bas
-            # entre ses limites), pas depuis le point le plus bas de tout le profil, qui
-            # peut se trouver dans un autre lit.
-            bed_points, _, _ = clip_to_bounds(section.points, bounds)
-            z_ref = min(pt.z for pt in (bed_points or section.points))
-            color = EXISTING_COLOR
         else:
             params = self._to_project_parameters(project_data)
             section = build_project_cross_section(params, name="Projet")
-            z_ref = params.anchor_z
+
+        if zone in (LEFT_ARM, RIGHT_ARM):
+            split = bounds[1] if zone == LEFT_ARM else bounds[0]
+            first, last = section.points[0].x, section.points[-1].x
+            if not first < split < last:
+                raise ValueError(
+                    f"Séparation des bras : X = {split:.2f} m est en dehors du profil calculé "
+                    f"(X = {first:.2f} → {last:.2f} m)."
+                )
+
+        # Tirant d'eau mesuré depuis le fond de la zone d'écoulement (le bras choisi), pas
+        # depuis le point le plus bas de tout le profil, qui peut se trouver dans l'autre bras.
+        zone_points, _, _ = clip_to_bounds(section.points, bounds)
+        if hydro_source == 'existing':
+            z_ref = min(pt.z for pt in (zone_points or section.points))
+            color = EXISTING_COLOR
+        else:
+            # Profil projet : depuis le fond du lit (cote d'ancrage) tant que ce fond est dans
+            # la zone d'écoulement, sinon depuis le point le plus bas de la zone.
+            bed_in_zone = bounds is None or (
+                params.anchor_x < bounds[1] and params.anchor_x + params.bed_width > bounds[0]
+            )
+            z_ref = params.anchor_z if bed_in_zone or not zone_points else min(pt.z for pt in zone_points)
             color = PROJECT_COLOR
 
         # --- Moteur Hydraulique --- (fonction pure, cf. core.hydraulics.resolve_hydraulic_result :
@@ -164,10 +216,23 @@ class ProfileController:
                 f'<span style="color:{theme.TEXT_PRIMARY}"><b>Résultats hydrauliques</b></span><br><br>'
                 f"{q_line}<br>{v_line}<br>{s_line}<br>{h_line}"
             )
-            if bounds is not None:
-                texte_resultats += "<br>" + discreet_line(
-                    "Lit de calcul", f"X = {bounds[0]:.2f} → {bounds[1]:.2f} m"
-                )
+            zone_label = None
+            if zone == LEFT_ARM:
+                zone_label = f"bras gauche seul (X < {bounds[1]:.2f} m)"
+            elif zone == RIGHT_ARM:
+                zone_label = f"bras droit seul (X > {bounds[0]:.2f} m)"
+            elif zone == CUSTOM_ZONE:
+                zone_label = f"X = {bounds[0]:.2f} → {bounds[1]:.2f} m"
+            if zone_label:
+                texte_resultats += "<br>" + discreet_line("Zone d'écoulement", zone_label)
+
+            # Plusieurs zones en eau (typiquement les deux bras) : répartition du débit,
+            # chacune avec son propre rayon hydraulique (cf. compute_hydraulic_params).
+            if len(res["wet_intervals"]) > 1:
+                texte_resultats += "<br><b>Répartition du débit :</b>"
+                for (x0, x1), q in zip(res["wet_intervals"], res["bed_discharges"]):
+                    share = 100 * q / res["Q"] if res["Q"] else 0
+                    texte_resultats += f"<br>&nbsp;&nbsp;• X {x0:.2f} → {x1:.2f} m : {q:.2f} m³/s ({share:.0f} %)"
 
             fig.add_annotation(
                 text=texte_resultats, align="left", showarrow=False,
@@ -177,21 +242,6 @@ class ProfileController:
             )
 
         return fig
-
-    @staticmethod
-    def _calc_bounds(hydro_data: Dict[str, Any]) -> Optional[Tuple[float, float]]:
-        """Limites (X gauche, X droite) du lit de calcul hydraulique, ou None si l'option
-        n'est pas activée. Lève ValueError si elles sont incohérentes : MainWindow affiche
-        alors le message à la place du graphique."""
-        if not hydro_data.get('hydro_bounds_enabled'):
-            return None
-        x_left = float(hydro_data.get('hydro_x_left', 0.0))
-        x_right = float(hydro_data.get('hydro_x_right', 0.0))
-        if not x_left < x_right:
-            raise ValueError(
-                "Lit de calcul : le X gauche doit être strictement inférieur au X droite."
-            )
-        return x_left, x_right
 
     def _to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:
         points = dataframe_to_points(pd.DataFrame(raw_data))

@@ -3,16 +3,34 @@ import math
 from typing import List, Optional, Tuple
 from core.models import Point, CrossSection
 
-# Limites (X gauche, X droite) du lit dans lequel on fait le calcul, ou None pour tout le
-# profil. Chaque limite agit comme une paroi verticale fictive : l'eau ne s'étend pas
-# au-delà, et la paroi ne compte pas dans le périmètre mouillé (interface d'eau, pas un
-# frottement sur le terrain).
+# Limites (X gauche, X droite) de la zone dans laquelle on fait le calcul, ou None pour
+# tout le profil. Chaque limite agit comme une paroi verticale fictive : l'eau ne s'étend
+# pas au-delà, et la paroi ne compte pas dans le périmètre mouillé (interface d'eau, pas
+# un frottement sur le terrain). Une limite peut être infinie (-inf / +inf) : le profil
+# n'est alors borné de ce côté que par son extrémité naturelle (ex. "bras gauche seul" =
+# (-inf, X de séparation des bras)).
 Bounds = Optional[Tuple[float, float]]
 
 
 def _empty_result(water_z: Optional[float]) -> dict:
     return {"S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0, "water_z": water_z,
-            "x_left": None, "x_right": None, "wet_intervals": []}
+            "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": []}
+
+
+def suggest_arm_split(points: List[Point]) -> Optional[Point]:
+    """Point haut qui sépare le plus nettement deux bras (ex. la crête d'une île), ou None
+    si le profil n'a qu'un seul creux. Pour chaque point intérieur, on mesure de combien il
+    domine le fond du bras le MOINS profond de part et d'autre (min(crête - fond gauche,
+    crête - fond droit)) : le meilleur séparateur est celui qui maximise cette hauteur. Un
+    point de berge extérieure ne sépare rien (un seul côté a un fond plus bas)."""
+    best, best_height = None, 0.0
+    for k in range(1, len(points) - 1):
+        left_bottom = min(p.z for p in points[:k])
+        right_bottom = min(p.z for p in points[k + 1:])
+        height = min(points[k].z - left_bottom, points[k].z - right_bottom)
+        if height > best_height:
+            best, best_height = points[k], height
+    return best
 
 
 def _interpolate_z(points: List[Point], x: float) -> float:
@@ -104,24 +122,28 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     chaque lit (somme des débitances), chacun avec son propre rayon hydraulique : un seul
     Rh global sous-estimerait le lit principal en le moyennant avec un petit lit voisin.
     V est la vitesse moyenne Q / S, Rh le rapport global S / P (pour information).
-    `wet_intervals` liste les (x_gauche, x_droite) de chaque lit, pour l'affichage ; x_left
-    et x_right en sont les bornes extrêmes."""
+    `wet_intervals` liste les (x_gauche, x_droite) de chaque lit, pour l'affichage, et
+    `bed_discharges` le débit de chacun (même ordre) ; x_left et x_right en sont les bornes
+    extrêmes."""
     if slope <= 0 or ks <= 0:
         return _empty_result(water_z)
 
     beds = get_wet_beds(section, water_z, bounds)
 
-    s_total, p_total, q_total = 0.0, 0.0, 0.0
+    s_total, p_total = 0.0, 0.0
+    bed_discharges = []
     for bed in beds:
         s = p = 0.0
         # Intégration par la méthode des trapèzes
         for p1, p2 in zip(bed, bed[1:]):
             s += (p2.x - p1.x) * ((water_z - p1.z) + (water_z - p2.z)) / 2.0
             p += math.hypot(p2.x - p1.x, p2.z - p1.z)
-        if s > 0 and p > 0:
-            q_total += ks * s * math.pow(s / p, 2 / 3) * math.sqrt(slope)
+        bed_discharges.append(
+            ks * s * math.pow(s / p, 2 / 3) * math.sqrt(slope) if s > 0 and p > 0 else 0.0
+        )
         s_total += s
         p_total += p
+    q_total = sum(bed_discharges)
 
     if s_total <= 0 or p_total <= 0:
         return _empty_result(water_z)
@@ -130,6 +152,7 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
         "S": s_total, "P": p_total, "Rh": s_total / p_total, "V": q_total / s_total, "Q": q_total,
         "water_z": water_z, "x_left": beds[0][0].x, "x_right": beds[-1][-1].x,
         "wet_intervals": [(bed[0].x, bed[-1].x) for bed in beds],
+        "bed_discharges": bed_discharges,
     }
 
 

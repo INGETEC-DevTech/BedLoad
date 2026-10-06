@@ -14,7 +14,7 @@ class PointPickerDialog(QDialog):
     clic valide directement le point visé."""
 
     def __init__(self, parent=None, title: str = "Choisir un point", label: str = "Point :",
-                 items: List[str] = None):
+                 items: List[str] = None, current_row: int = 0):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumSize(380, 360)
@@ -27,7 +27,8 @@ class PointPickerDialog(QDialog):
         self.list_widget = QListWidget()
         self.list_widget.addItems(items or [])
         if self.list_widget.count():
-            self.list_widget.setCurrentRow(0)
+            self.list_widget.setCurrentRow(min(max(current_row, 0), self.list_widget.count() - 1))
+            self.list_widget.scrollToItem(self.list_widget.currentItem())
         self.list_widget.itemDoubleClicked.connect(lambda _item: self.accept())
         layout.addWidget(self.list_widget, 1)
 

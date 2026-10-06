@@ -3,6 +3,7 @@ import math
 import pytest
 
 from core.hydraulics import (
+    suggest_arm_split,
     clip_to_bounds,
     compute_hydraulic_params,
     find_water_level_for_discharge,
@@ -89,7 +90,7 @@ def test_compute_hydraulic_params_invalid_slope_or_ks_returns_zeros(trapezoidal_
 
     assert res == {
         "S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0,
-        "water_z": 1.0, "x_left": None, "x_right": None, "wet_intervals": [],
+        "water_z": 1.0, "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
     }
 
 
@@ -375,6 +376,11 @@ def _hydraulics_figure(**hydro):
     return ProfileController().build_figure(TWO_BEDS_POINTS, data, ViewMode.HYDRAULICS)
 
 
+def _results_text(fig):
+    """Texte de l'encadré "Résultats hydrauliques" (les autres annotations : zones grisées)."""
+    return next(a.text for a in fig.layout.annotations if "Résultats hydrauliques" in a.text)
+
+
 def _water_trace(fig):
     return next(t for t in fig.data if t.name == "Ligne d'eau")
 
@@ -388,12 +394,30 @@ def test_hydraulics_figure_draws_one_water_segment_per_bed():
     assert list(trace.x[3:]) == pytest.approx([7.5, 11.5])
 
 
-def test_hydraulics_figure_with_bounds_draws_only_the_chosen_bed_and_the_bounds():
+def _dashed_lines_x(fig):
+    return sorted(sh.x0 for sh in fig.layout.shapes if sh.type == "line")
+
+
+def _greyed_out(fig):
+    return sorted((sh.x0, sh.x1) for sh in fig.layout.shapes if sh.type == "rect")
+
+
+def test_hydraulics_figure_between_two_x_draws_only_that_zone_and_greys_the_rest():
+    fig = _hydraulics_figure(hydro_zone="custom", hydro_x_left=6.0, hydro_x_right=10.0)
+
+    assert list(_water_trace(fig).x) == pytest.approx([7.5, 10.0])
+    assert _dashed_lines_x(fig) == [6.0, 10.0]
+    # Grisé de part et d'autre, jusqu'au bord du graphique (profil de 0 à 12, marge de 1 m).
+    assert _greyed_out(fig) == [(-1.0, 6.0), (10.0, 13.0)]
+    assert "Zone d'écoulement" in _results_text(fig)
+
+
+def test_legacy_bounds_checkbox_is_read_as_between_two_x():
+    """Profil enregistré avec l'ancienne case "Lit de calcul" (avant le choix du bras)."""
     fig = _hydraulics_figure(hydro_bounds_enabled=True, hydro_x_left=6.0, hydro_x_right=13.0)
 
     assert list(_water_trace(fig).x) == pytest.approx([7.5, 11.5])
-    assert sorted(shape.x0 for shape in fig.layout.shapes) == [6.0, 13.0]
-    assert "Lit de calcul" in fig.layout.annotations[0].text
+    assert "X = 6.00 → 13.00 m" in _results_text(fig)
 
 
 def test_hydraulics_bounds_disabled_are_ignored_even_if_inconsistent():
@@ -416,6 +440,78 @@ def test_existing_source_depth_is_measured_from_the_bottom_of_the_chosen_bed():
               for p in TWO_BEDS_POINTS]
     data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 1.0, "slope": 0.001,
             "ks_pro": 30.0, "hydro_bounds_enabled": True, "hydro_x_left": 6.0, "hydro_x_right": 13.0}
+
+    fig = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+
+    assert list(_water_trace(fig).y) == pytest.approx([1.5, 1.5])
+
+
+# --- Deux bras : eau dans les deux, ou dans un seul ---
+
+def test_suggest_arm_split_finds_the_crest_between_two_arms(two_beds_section, trapezoidal_section):
+    assert suggest_arm_split(two_beds_section.points) == Point(x=6, z=3)
+    # Un seul creux : aucun séparateur (les berges extérieures ne séparent rien).
+    assert suggest_arm_split(trapezoidal_section.points) is None
+
+
+def test_discharge_is_split_between_the_wet_arms(two_beds_section):
+    res = compute_hydraulic_params(two_beds_section, water_z=1.0, slope=0.001, ks=30.0)
+
+    assert res["bed_discharges"] == [pytest.approx(res["Q"] / 2), pytest.approx(res["Q"] / 2)]
+
+
+@pytest.mark.parametrize("zone,expected", [("left_arm", [0.5, 4.5]), ("right_arm", [7.5, 11.5])])
+def test_single_arm_puts_the_water_only_in_the_chosen_arm(zone, expected):
+    fig = _hydraulics_figure(hydro_zone=zone, hydro_arm_split_x=6.0)
+
+    assert list(_water_trace(fig).x) == pytest.approx(expected)
+    assert _dashed_lines_x(fig) == [6.0]
+    excluded = (6.0, 13.0) if zone == "left_arm" else (-1.0, 6.0)
+    assert _greyed_out(fig) == [excluded]
+    side = "gauche" if zone == "left_arm" else "droit"
+    assert f"bras {side} seul" in _results_text(fig)
+    assert "Répartition du débit" not in _results_text(fig)
+
+
+def test_single_arm_imposed_q_puts_the_whole_flow_in_that_arm():
+    """Même débit imposé : avec les deux bras il se partage, avec un seul bras il passe tout
+    entier dans ce bras, d'où une cote d'eau plus haute."""
+    both = _hydraulics_figure(calc_mode="H_FROM_Q", q_target=1.0)
+    one = _hydraulics_figure(calc_mode="H_FROM_Q", q_target=1.0, hydro_zone="left_arm", hydro_arm_split_x=6.0)
+
+    assert _water_trace(one).y[0] > _water_trace(both).y[0]
+    assert "Répartition du débit" in _results_text(both)
+
+
+def test_single_arm_above_the_crest_keeps_the_water_in_that_arm():
+    """Berges extérieures à z=5, île à z=3, eau à z=3.5 : sans choix, l'île est submergée et
+    les deux bras ne forment plus qu'une seule nappe ; avec "bras gauche seul", la
+    séparation fait paroi et l'eau reste dans le bras gauche."""
+    from core.controller import ProfileController, ViewMode
+    points = [{"X (m)": x, "Z (m NGF)": z}
+              for x, z in [(0, 5), (1, 0), (4, 0), (5, 2), (6, 3), (7, 2), (8, 0), (11, 0), (12, 5)]]
+    data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 3.5, "slope": 0.001, "ks_pro": 30.0}
+
+    merged = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+    left = ProfileController().build_figure(
+        points, {**data, "hydro_zone": "left_arm", "hydro_arm_split_x": 6.0}, ViewMode.HYDRAULICS)
+
+    assert list(_water_trace(merged).x) == pytest.approx([0.3, 11.7])
+    assert list(_water_trace(left).x) == pytest.approx([0.3, 6.0])
+
+
+def test_arm_split_outside_the_profile_raises_a_readable_error():
+    with pytest.raises(ValueError, match="Séparation des bras"):
+        _hydraulics_figure(hydro_zone="right_arm", hydro_arm_split_x=50.0)
+
+
+def test_single_arm_depth_is_measured_from_the_bottom_of_that_arm():
+    """Bras droit relevé de 0.5 m : en "bras droit seul", h = 1 m donne une cote d'eau à 1.5."""
+    from core.controller import ProfileController, ViewMode
+    points = [{"X (m)": p["X (m)"], "Z (m NGF)": p["Z (m NGF)"] + (0.5 if p["X (m)"] >= 7 else 0)}
+              for p in TWO_BEDS_POINTS]
+    data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 1.0, "slope": 0.001,
+            "ks_pro": 30.0, "hydro_zone": "right_arm", "hydro_arm_split_x": 6.0}
 
     fig = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
 

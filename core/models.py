@@ -81,9 +81,13 @@ class ProjectParameters:
     # Rugosité (Strickler) du lit majeur : stockée pour un usage futur, pas encore
     # utilisée dans le calcul hydraulique (un seul paramètre pour les deux rives).
     floodplain_ks: float = 25.0
-    # Lit de calcul : si activé, le calcul hydraulique ne porte que sur le terrain compris
-    # entre ces deux X (cf. core.hydraulics.Bounds). Désactivé = tout le profil.
-    hydro_bounds_enabled: bool = False
+    # Zone d'écoulement du calcul hydraulique (cf. core.controller.flow_zone_bounds) :
+    # - "all"       : tout le profil, l'eau remplit tous les bras qu'atteint la cote d'eau ;
+    # - "left_arm"  : bras gauche seul (à gauche de hydro_arm_split_x) ;
+    # - "right_arm" : bras droit seul (à droite de hydro_arm_split_x) ;
+    # - "custom"    : terrain compris entre hydro_x_left et hydro_x_right.
+    hydro_zone: str = "all"
+    hydro_arm_split_x: float = 0.0
     hydro_x_left: float = 0.0
     hydro_x_right: float = 0.0
 

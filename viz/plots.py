@@ -5,6 +5,7 @@ Ces fonctions ne dépendent pas de Streamlit : elles retournent un objet
 plotly.graph_objects.Figure, que la couche UI se charge d'afficher.
 """
 
+import math
 from typing import List, Optional, Tuple
 
 import plotly.graph_objects as go
@@ -56,11 +57,16 @@ def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
 
 def _add_water(fig: go.Figure, water_level: Optional[float],
                water_intervals: Optional[List[Tuple[float, float]]],
-               calc_bounds: Optional[Tuple[float, float]]) -> None:
+               calc_bounds: Optional[Tuple[float, float]],
+               x_extent: Tuple[float, float]) -> None:
     """Ligne d'eau : un trait par lit mouillé (interrompu là où le terrain émerge, au lieu
     d'un trait continu qui traverserait un merlon ou une berge entre deux lits), en une
-    seule trace (segments séparés par None) pour une seule entrée de légende. Les limites
-    du lit de calcul, si définies, sont tracées en tirets verticaux."""
+    seule trace (segments séparés par None) pour une seule entrée de légende.
+
+    Les limites de la zone d'écoulement, si définies, sont tracées en tirets verticaux, et
+    le terrain exclu du calcul (ex. l'autre bras) est grisé jusqu'au bord du graphique
+    (`x_extent` : abscisses extrêmes des profils tracés). Une limite infinie (bras seul :
+    ce côté n'est borné que par l'extrémité du profil) n'est ni tracée ni grisée."""
     if water_level is not None and water_intervals:
         xs, ys = [], []
         for x_left, x_right in water_intervals:
@@ -80,8 +86,23 @@ def _add_water(fig: go.Figure, water_level: Optional[float],
         )
 
     if calc_bounds is not None:
-        for x in calc_bounds:
-            fig.add_vline(x=x, line=dict(color=CALC_BOUND_COLOR, width=1, dash="dash"))
+        x_min, x_max = x_extent[0] - 1, x_extent[1] + 1  # même marge que le cadrage des axes
+        left, right = calc_bounds
+        excluded = []
+        if math.isfinite(left):
+            fig.add_vline(x=left, line=dict(color=CALC_BOUND_COLOR, width=1, dash="dash"))
+            if left > x_min:
+                excluded.append((x_min, left))
+        if math.isfinite(right):
+            fig.add_vline(x=right, line=dict(color=CALC_BOUND_COLOR, width=1, dash="dash"))
+            if right < x_max:
+                excluded.append((right, x_max))
+        for x0, x1 in excluded:
+            fig.add_vrect(
+                x0=x0, x1=x1, fillcolor=CALC_BOUND_COLOR, opacity=0.08, line_width=0, layer="below",
+                annotation_text="Hors calcul", annotation_position="bottom left" if x0 == x_min else "bottom right",
+                annotation_font=dict(size=10, color=CALC_BOUND_COLOR),
+            )
 
 
 def _centroid(xs: List[float], zs: List[float]) -> Tuple[float, float]:
@@ -178,7 +199,7 @@ def plot_single_profile(
         )
     )
     
-    _add_water(fig, water_level, water_intervals, calc_bounds)
+    _add_water(fig, water_level, water_intervals, calc_bounds, (min(xs), max(xs)))
 
     fig = _apply_common_layout(fig, section.name)
         
@@ -229,7 +250,8 @@ def plot_overlay(
         )
     )
 
-    _add_water(fig, water_level, water_intervals, calc_bounds)
+    all_xs = list(xs_e) + list(xs_p)
+    _add_water(fig, water_level, water_intervals, calc_bounds, (min(all_xs), max(all_xs)))
 
     fig = _apply_common_layout(fig, f"{existing.name} vs {project.name}")
     if earthworks is not None:
