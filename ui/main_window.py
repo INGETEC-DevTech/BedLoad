@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
         self.forms_stack.hide()
         self._update_context_bar(None)
         self.plot_view.lbl_title.setText("Profil en long du scénario")
+        self.plot_view.export_name = "Profil en long"
 
         rows = self.db_manager.get_longitudinal_data(scenario_id)
         project_id = self.db_manager.get_scenario_project_id(scenario_id)
@@ -301,7 +302,10 @@ class MainWindow(QMainWindow):
         self.form_project.set_existing_points(existing_data)
         self.form_hydraulics.set_existing_points(existing_data)
         # Un seul blob project_params en base : les champs hydrauliques (slope, ks_pro,
-        # calc_mode, q_target, h_eau, hydro_source, show_overlay) y sont fusionnés.
+        # calc_mode, q_target, h_eau, hydro_source...) y sont fusionnés. Les deux formulaires
+        # ne doivent donc jamais partager une clé : la case "profil en fond" a la sienne dans
+        # chaque onglet (show_overlay_project / show_overlay_hydraulics), sinon celle de
+        # l'onglet Hydraulique écrasait celle du Profil projet à chaque enregistrement.
         project_data = {**self.form_project.get_data(), **self.form_hydraulics.get_data()}
         self._save_state(self._current_target, existing_data, project_data)
         self.update_plot()
@@ -313,9 +317,9 @@ class MainWindow(QMainWindow):
         mode = self.TAB_MODES[self.tabs.currentIndex()]
 
         if mode is ViewMode.PROJECT:
-            show_overlay = self.form_project.get_data()['show_overlay']
+            show_overlay = self.form_project.get_data()['show_overlay_project']
         elif mode is ViewMode.HYDRAULICS:
-            show_overlay = self.form_hydraulics.get_data()['show_overlay']
+            show_overlay = self.form_hydraulics.get_data()['show_overlay_hydraulics']
         else:
             show_overlay = False
 
@@ -330,4 +334,7 @@ class MainWindow(QMainWindow):
         # Une vue par (profil ou brouillon, onglet) : son zoom est mémorisé par le graphique
         # et retrouvé au retour (ex. après un passage par le profil en long).
         kind, row_id = self._current_target
+        context = self.sidebar.current_context()
+        tab_label = self.tabs.tabText(self.tabs.currentIndex())
+        self.plot_view.export_name = f"{context[-1]} - {tab_label}" if context else tab_label
         self.plot_view.update_plot(fig, view_key=f"{kind}:{row_id}:{mode.value}")

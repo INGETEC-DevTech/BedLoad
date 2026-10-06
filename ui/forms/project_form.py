@@ -267,7 +267,7 @@ class ProjectProfileForm(QWidget):
 
     def get_data(self) -> dict:
         data = {key: sb.value() for key, sb in self.inputs.items()}
-        data['show_overlay'] = self.chk_overlay.isChecked()
+        data['show_overlay_project'] = self.chk_overlay.isChecked()
         data['connect_x_left'], data['connect_z_left'] = self._connect_left or (None, None)
         data['connect_x_right'], data['connect_z_right'] = self._connect_right or (None, None)
         return data
@@ -279,7 +279,9 @@ class ProjectProfileForm(QWidget):
             if key in self.inputs:
                 self.inputs[key].setValue(float(value))
 
-        self.chk_overlay.setChecked(bool(data.get('show_overlay', False)))
+        # Clé propre à cet onglet ; un profil enregistré avant la séparation n'a que
+        # l'ancienne clé commune "show_overlay", qui sert alors de valeur initiale.
+        self.chk_overlay.setChecked(bool(data.get('show_overlay_project', data.get('show_overlay', False))))
         # Simple repère visuel ponctuel de la session : il ne fait pas partie des
         # données sauvegardées, donc il se réinitialise à chaque rechargement de profil.
         self._anchored_values = None

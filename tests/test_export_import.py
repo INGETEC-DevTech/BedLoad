@@ -399,3 +399,19 @@ def test_read_export_file_rejects_malformed_json(tmp_path):
 def test_read_export_file_rejects_missing_file(tmp_path):
     with pytest.raises(ValueError, match="Impossible de lire"):
         DatabaseManager.read_export_file(tmp_path / "n_existe_pas.json")
+
+
+
+def test_export_import_keeps_both_background_profile_boxes(tmp_path):
+    db = DatabaseManager(db_path=tmp_path / "test.db")
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    params = {"show_overlay_project": True, "show_overlay_hydraulics": False}
+    db.save_profile_state(profile_id, [], params)
+    path = tmp_path / "profil.json"
+    db.export_profile_to_file(profile_id, path)
+
+    new_id = db.import_profile_into_scenario(scenario_id, db.read_export_file(path))
+
+    restored = db.load_profile_state(new_id)[1]
+    assert (restored["show_overlay_project"], restored["show_overlay_hydraulics"]) == (True, False)

@@ -491,6 +491,86 @@ def test_export_excel_button_writes_the_open_profile(main_window, monkeypatch, t
     assert ("Lit trapézoïdal", "Largeur fond", 3.25, "m") in rows
 
 
+def test_export_image_name_follows_what_is_displayed(main_window):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 120", 120.0)
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}], {})
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (PROFILE, profile_id))
+    assert main_window.plot_view.export_name == "PK 120 - Profil existant"
+    main_window.tabs.setCurrentIndex(2)
+    assert main_window.plot_view.export_name == "PK 120 - Hydraulique"
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    assert main_window.plot_view.export_name == "Profil en long"
+
+
+POINTS_2 = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
+
+
+def _overlay_boxes(window):
+    return window.form_project.chk_overlay.isChecked(), window.form_hydraulics.chk_overlay.isChecked()
+
+
+@pytest.mark.parametrize("project_box,hydraulics_box", [(True, False), (False, True)])
+def test_each_background_profile_box_keeps_its_own_value_after_a_round_trip(main_window, project_box, hydraulics_box):
+    """Cocher "Afficher le profil ... en fond" dans un onglet, aller voir le profil en long
+    puis revenir : chaque case retrouve SA valeur (avant, celle de l'onglet Hydraulique
+    écrasait celle du Profil projet à l'enregistrement)."""
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, POINTS_2, {})
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (PROFILE, profile_id))
+
+    main_window.form_project.chk_overlay.setChecked(project_box)
+    main_window.form_hydraulics.chk_overlay.setChecked(hydraulics_box)
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    click(main_window.sidebar, (PROFILE, profile_id))
+
+    assert _overlay_boxes(main_window) == (project_box, hydraulics_box)
+    saved = db.load_profile_state(profile_id)[1]
+    assert (saved["show_overlay_project"], saved["show_overlay_hydraulics"]) == (project_box, hydraulics_box)
+
+
+def test_background_profile_boxes_are_kept_for_drafts_too(main_window):
+    db = main_window.db_manager
+    draft_id = db.create_draft("Essai")
+    other_id = db.create_draft("Autre")
+    db.save_draft_state(draft_id, POINTS_2, {})
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (DRAFT, draft_id))
+
+    main_window.form_project.chk_overlay.setChecked(True)
+    main_window.form_hydraulics.chk_overlay.setChecked(False)
+    click(main_window.sidebar, (DRAFT, other_id))
+    click(main_window.sidebar, (DRAFT, draft_id))
+
+    assert _overlay_boxes(main_window) == (True, False)
+
+
+@pytest.mark.parametrize("legacy_value", [True, False])
+def test_profile_saved_with_the_old_shared_key_initialises_both_boxes(main_window, legacy_value):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, POINTS_2, {"show_overlay": legacy_value})
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (PROFILE, profile_id))
+
+    assert _overlay_boxes(main_window) == (legacy_value, legacy_value)
+
+
+def test_project_and_hydraulics_forms_share_no_saved_key(main_window):
+    """Les deux formulaires sont fusionnés dans un seul enregistrement : une clé commune
+    ferait écraser la valeur de l'un par celle de l'autre."""
+    shared = set(main_window.form_project.get_data()) & set(main_window.form_hydraulics.get_data())
+    assert shared == set()
+
+
 def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")

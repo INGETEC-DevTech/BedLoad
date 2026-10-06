@@ -255,7 +255,7 @@ class HydraulicsForm(QWidget):
         data = {key: sb.value() for key, sb in self.inputs.items()}
         data['calc_mode'] = 'Q_FROM_H' if self.radio_calc_q.isChecked() else 'H_FROM_Q'
         data['hydro_source'] = 'existing' if self.radio_source_existing.isChecked() else 'project'
-        data['show_overlay'] = self.chk_overlay.isChecked()
+        data['show_overlay_hydraulics'] = self.chk_overlay.isChecked()
         if self.radio_zone_arm.isChecked():
             data['hydro_zone'] = self.combo_arm.currentData()
         elif self.radio_zone_custom.isChecked():
@@ -275,7 +275,9 @@ class HydraulicsForm(QWidget):
         self.radio_source_existing.setChecked(source == 'existing')
         self.radio_source_project.setChecked(source != 'existing')
 
-        self.chk_overlay.setChecked(bool(data.get('show_overlay', False)))
+        # Clé propre à cet onglet ; un profil enregistré avant la séparation n'a que
+        # l'ancienne clé commune "show_overlay", qui sert alors de valeur initiale.
+        self.chk_overlay.setChecked(bool(data.get('show_overlay_hydraulics', data.get('show_overlay', False))))
         zone = data.get('hydro_zone')
         if zone is None:
             # Profil enregistré avant le choix du bras (ancienne case "Lit de calcul").
