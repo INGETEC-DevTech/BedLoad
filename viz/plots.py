@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 
 import plotly.graph_objects as go
 
+from core.earthworks import CUT, EarthworksResult
 from core.models import CrossSection
 from core.longitudinal import LongitudinalProfile
 
@@ -16,6 +17,16 @@ EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
 HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
 CALC_BOUND_COLOR = "#6c757d" # gris : limites du lit de calcul hydraulique
+CUT_COLOR = "#d62728"        # rouge : déblai (terrain existant à enlever)
+FILL_COLOR = "#ff7f0e"       # orange : remblai (matériaux à ajouter)
+# Surface en dessous de laquelle une zone n'est pas étiquetée sur le graphique (elle reste
+# identifiable au survol) : évite d'empiler des étiquettes sur de minuscules zones.
+_MIN_LABELLED_AREA = 0.01
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({r}, {g}, {b}, {alpha})"
 
 
 def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
@@ -73,6 +84,78 @@ def _add_water(fig: go.Figure, water_level: Optional[float],
             fig.add_vline(x=x, line=dict(color=CALC_BOUND_COLOR, width=1, dash="dash"))
 
 
+def _centroid(xs: List[float], zs: List[float]) -> Tuple[float, float]:
+    """Centre de gravité d'un polygone fermé (formule de l'aire signée), pour placer
+    l'étiquette d'une zone à l'intérieur de celle-ci ; moyenne des sommets en repli si le
+    polygone est dégénéré."""
+    area = cx = cz = 0.0
+    for (x0, z0), (x1, z1) in zip(zip(xs, zs), zip(xs[1:], zs[1:])):
+        cross = x0 * z1 - x1 * z0
+        area += cross
+        cx += (x0 + x1) * cross
+        cz += (z0 + z1) * cross
+    if abs(area) < 1e-12:
+        return sum(xs) / len(xs), sum(zs) / len(zs)
+    return cx / (3 * area), cz / (3 * area)
+
+
+def _add_earthwork_zones(fig: go.Figure, earthworks: EarthworksResult) -> None:
+    """Une surface colorée par zone de déblai/remblai, nommée (D1, R1...) au survol et, si
+    elle n'est pas minuscule, par une étiquette en son centre. Une seule entrée de légende
+    par type de zone."""
+    shown_in_legend = set()
+    for zone in earthworks.zones:
+        is_cut = zone.kind == CUT
+        color = CUT_COLOR if is_cut else FILL_COLOR
+        label = "Déblai (à enlever)" if is_cut else "Remblai (à ajouter)"
+        fig.add_trace(
+            go.Scatter(
+                x=zone.outline_x, y=zone.outline_z,
+                mode="lines", fill="toself",
+                fillcolor=_rgba(color, 0.3), line=dict(width=0, color=color),
+                name=label, legendgroup=zone.kind,
+                showlegend=zone.kind not in shown_in_legend,
+                hoveron="fills", hoverinfo="text",
+                text=f"{zone.name} : {label.split(' ')[0]} {zone.area:.2f} m²",
+            )
+        )
+        shown_in_legend.add(zone.kind)
+
+        if zone.area >= _MIN_LABELLED_AREA:
+            label_x, label_z = _centroid(zone.outline_x, zone.outline_z)
+            fig.add_annotation(
+                x=label_x, y=label_z,
+                text=f"<b>{zone.name}</b><br>{zone.area:.2f} m²",
+                showarrow=False, font=dict(size=10, color=color),
+                bgcolor="rgba(255, 255, 255, 0.7)",
+            )
+
+
+def _add_earthwork_summary(fig: go.Figure, earthworks: EarthworksResult) -> None:
+    """Encadré des totaux (en haut à gauche, comme les résultats hydrauliques)."""
+    if earthworks.extent is None:
+        text = "<b>Terrassements</b><br><br>Les deux profils n'ont pas d'emprise commune."
+    else:
+        n_cut = sum(1 for z in earthworks.zones if z.kind == CUT)
+        n_fill = len(earthworks.zones) - n_cut
+        x0, x1 = earthworks.extent
+        text = (
+            "<b>Terrassements (surface en coupe)</b><br><br>"
+            f'<span style="color:{CUT_COLOR}"><b>Déblai (à enlever) :</b> '
+            f"{earthworks.cut_total:.2f} m²</span> ({n_cut} zone{'s' if n_cut > 1 else ''})<br>"
+            f'<span style="color:{FILL_COLOR}"><b>Remblai (à ajouter) :</b> '
+            f"{earthworks.fill_total:.2f} m²</span> ({n_fill} zone{'s' if n_fill > 1 else ''})<br>"
+            f"<b>Bilan (déblai − remblai) :</b> {earthworks.balance:+.2f} m²<br>"
+            f"<i>Emprise commune : X = {x0:.2f} → {x1:.2f} m</i>"
+        )
+    fig.add_annotation(
+        text=text, align="left", showarrow=False,
+        xref="paper", yref="paper", x=0.02, y=0.96, xanchor="left", yanchor="top",
+        bgcolor="rgba(255, 255, 255, 0.95)", bordercolor="#dee2e6",
+        borderwidth=1, borderpad=10, font=dict(size=12, color="#495057"),
+    )
+
+
 def plot_single_profile(
     section: CrossSection,
     color: str = PROJECT_COLOR,
@@ -112,11 +195,17 @@ def plot_overlay(
     water_level: float = None,
     water_intervals: Optional[List[Tuple[float, float]]] = None,
     calc_bounds: Optional[Tuple[float, float]] = None,
+    earthworks: Optional[EarthworksResult] = None,
 ) -> go.Figure:
-    """Graphique de comparaison : les deux profils superposés, avec ligne d'eau optionnelle."""
+    """Graphique de comparaison : les deux profils superposés, avec ligne d'eau optionnelle
+    et, si `earthworks` est fourni, les zones de déblai/remblai entre les deux."""
     xs_e, zs_e = existing.to_arrays()
     xs_p, zs_p = project.to_arrays()
     fig = go.Figure()
+
+    # Zones tracées en premier : les deux profils restent lisibles par-dessus.
+    if earthworks is not None:
+        _add_earthwork_zones(fig, earthworks)
     
     # Trace du profil existant (vert)
     fig.add_trace(
@@ -143,6 +232,8 @@ def plot_overlay(
     _add_water(fig, water_level, water_intervals, calc_bounds)
 
     fig = _apply_common_layout(fig, f"{existing.name} vs {project.name}")
+    if earthworks is not None:
+        _add_earthwork_summary(fig, earthworks)
     
     # On force le cadre UNIQUEMENT sur le profil PROJET (+ 1 mètre de marge).
     fig.update_xaxes(range=[min(xs_p) - 1, max(xs_p) + 1])

@@ -1,5 +1,5 @@
 # ui/forms/project_form.py
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QDoubleSpinBox,
                                 QGroupBox, QScrollArea, QCheckBox, QPushButton,
                                 QLabel, QDialog, QMessageBox, QFrame, QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt
@@ -29,6 +29,10 @@ class ProjectProfileForm(QWidget):
         # pour permettre de pointer anchor_x/anchor_z (ou un raccord) dessus plutôt
         # que de les taper.
         self._existing_points = []
+        # Valeurs (anchor_x, anchor_z) des spinboxes juste après le choix d'un point
+        # d'ancrage existant, ou None : le message "Ancré sur le point existant" n'est vrai
+        # que tant que l'ancrage garde exactement ces valeurs (cf. _refresh_anchor_confirm).
+        self._anchored_values = None
         # Raccords latéraux : (x, z) figés à la sélection, ou None si non configurés.
         self._connect_left = None
         self._connect_right = None
@@ -199,48 +203,41 @@ class ProjectProfileForm(QWidget):
 
         # --- Raccord au terrain naturel (optionnel, de chaque côté) ---
         grp_connect = QGroupBox("Raccord au terrain naturel")
-        layout_connect = QVBoxLayout(grp_connect)
-        layout_connect.setSpacing(theme.SPACE_SM)
+        # Grille à deux colonnes (gauche / droite) : chaque côté empile son bouton de
+        # raccord, son bouton de retrait et le rappel du point raccordé, pour que ce rappel
+        # reste sous le bouton du côté concerné (même quand un seul côté est raccordé).
+        layout_connect = QGridLayout(grp_connect)
+        layout_connect.setHorizontalSpacing(theme.SPACE_SM)
+        layout_connect.setVerticalSpacing(theme.SPACE_SM)
+        layout_connect.setColumnStretch(0, 1)
+        layout_connect.setColumnStretch(1, 1)
 
-        row_pick = QHBoxLayout()
         self.btn_pick_connect_left = QPushButton("Raccord gauche")
         self.btn_pick_connect_left.clicked.connect(lambda: self._pick_connect_point('left'))
-        self.btn_pick_connect_left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row_pick.addWidget(self.btn_pick_connect_left, stretch=1)
-
         self.btn_pick_connect_right = QPushButton("Raccord droit")
         self.btn_pick_connect_right.clicked.connect(lambda: self._pick_connect_point('right'))
-        self.btn_pick_connect_right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row_pick.addWidget(self.btn_pick_connect_right, stretch=1)
-        layout_connect.addLayout(row_pick)
 
-        row_remove = QHBoxLayout()
         self.btn_remove_connect_left = QPushButton("Retirer le raccord")
         self.btn_remove_connect_left.clicked.connect(lambda: self._remove_connect_point('left'))
-        self.btn_remove_connect_left.setVisible(False)
-        row_remove.addWidget(self.btn_remove_connect_left)
-
         self.btn_remove_connect_right = QPushButton("Retirer le raccord")
         self.btn_remove_connect_right.clicked.connect(lambda: self._remove_connect_point('right'))
-        self.btn_remove_connect_right.setVisible(False)
-        row_remove.addWidget(self.btn_remove_connect_right)
-        layout_connect.addLayout(row_remove)
 
         self.lbl_connect_confirm_left = QLabel()
-        self.lbl_connect_confirm_left.setWordWrap(True)
-        self.lbl_connect_confirm_left.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
-        ))
-        self.lbl_connect_confirm_left.setVisible(False)
-        layout_connect.addWidget(self.lbl_connect_confirm_left)
-
         self.lbl_connect_confirm_right = QLabel()
-        self.lbl_connect_confirm_right.setWordWrap(True)
-        self.lbl_connect_confirm_right.setStyleSheet(theme.qss(
-            "font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"
-        ))
-        self.lbl_connect_confirm_right.setVisible(False)
-        layout_connect.addWidget(self.lbl_connect_confirm_right)
+
+        for column, (btn_pick, btn_remove, lbl) in enumerate((
+            (self.btn_pick_connect_left, self.btn_remove_connect_left, self.lbl_connect_confirm_left),
+            (self.btn_pick_connect_right, self.btn_remove_connect_right, self.lbl_connect_confirm_right),
+        )):
+            btn_pick.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            btn_remove.setVisible(False)
+            lbl.setWordWrap(True)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            lbl.setStyleSheet(theme.qss("font-size: ${FONT_SIZE_SM}px; color: $TEXT_MUTED;"))
+            lbl.setVisible(False)
+            layout_connect.addWidget(btn_pick, 0, column)
+            layout_connect.addWidget(btn_remove, 1, column)
+            layout_connect.addWidget(lbl, 2, column)
 
         layout.addWidget(grp_connect)
 
@@ -285,6 +282,7 @@ class ProjectProfileForm(QWidget):
         self.chk_overlay.setChecked(bool(data.get('show_overlay', False)))
         # Simple repère visuel ponctuel de la session : il ne fait pas partie des
         # données sauvegardées, donc il se réinitialise à chaque rechargement de profil.
+        self._anchored_values = None
         self.lbl_anchor_confirm.setVisible(False)
 
         cx_l, cz_l = data.get('connect_x_left'), data.get('connect_z_left')
@@ -343,9 +341,19 @@ class ProjectProfileForm(QWidget):
         self.lbl_anchor_confirm.setText(
             f"Ancré sur le point existant X = {x:.2f} m, Z = {z:.2f} m NGF"
         )
-        self.lbl_anchor_confirm.setVisible(True)
+        # Valeurs relues sur les spinboxes (arrondies à leur précision), pas celles du
+        # point : c'est à elles que les saisies suivantes seront comparées.
+        self._anchored_values = (self.inputs['anchor_x'].value(), self.inputs['anchor_z'].value())
 
         self.on_value_changed()
+
+    def _refresh_anchor_confirm(self):
+        """Affiche "Ancré sur le point existant" seulement si l'ancrage correspond encore
+        au point choisi : une modification de X ou de Z le rend faux, on le masque."""
+        current = (self.inputs['anchor_x'].value(), self.inputs['anchor_z'].value())
+        self.lbl_anchor_confirm.setVisible(
+            self._anchored_values is not None and current == self._anchored_values
+        )
 
     def _bank_top_x(self, side: str) -> float:
         """Reproduit le calcul du bout du lit majeur (ou, à défaut, de hdbg.x / hdbd.x) de
@@ -483,7 +491,11 @@ class ProjectProfileForm(QWidget):
         invalid_side = self._invalid_connect_side()
         if invalid_side is not None:
             self._handle_invalid_connect(invalid_side)
+            # "Annuler la modification" a pu remettre l'ancrage sur le point choisi.
+            self._refresh_anchor_confirm()
             return
+
+        self._refresh_anchor_confirm()
 
         self._last_valid_values = {key: sb.value() for key, sb in self.inputs.items()}
         self.data_changed.emit(self.get_data())

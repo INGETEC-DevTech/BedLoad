@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import plotly.graph_objects as go
 
+from core.earthworks import compute_earthworks
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import clip_to_bounds, resolve_hydraulic_result
@@ -71,7 +72,11 @@ class ProfileController:
 
         if show_overlay:
             section_ext = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
-            return plot_overlay(section_ext, section_proj)
+            # Les deux profils affichés ensemble : on montre aussi ce qu'il faut enlever
+            # (déblai) ou ajouter (remblai) pour passer de l'un à l'autre, par zone.
+            earthworks = (compute_earthworks(section_ext, section_proj)
+                          if len(section_ext.points) >= self.MIN_POINTS_FOR_PLOT else None)
+            return plot_overlay(section_ext, section_proj, earthworks=earthworks)
         return plot_single_profile(section_proj, color=PROJECT_COLOR)
 
     def _build_hydraulics_figure(
