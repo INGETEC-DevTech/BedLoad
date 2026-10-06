@@ -90,7 +90,16 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     try {{
                         if (typeof Plotly === 'undefined') return;
                         var graphDiv = document.getElementById('graph');
-                        var config = {{ displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'], displayModeBar: 'hover' }};
+                        // Double-clic et bouton "Réinitialiser" : notre propre retour au cadrage
+                        // par défaut (cf. resetToDefaultView) à la place de celui de Plotly.
+                        var config = {{
+                            displaylogo: false, displayModeBar: 'hover', doubleClick: false,
+                            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d', 'resetScale2d'],
+                            modeBarButtonsToAdd: [{{
+                                name: 'resetDefaultView', title: 'Revenir au cadrage par défaut',
+                                icon: Plotly.Icons.home, click: resetToDefaultView
+                            }}]
+                        }};
                         rememberView();
                         currentFrame = frameOf(figData.layout);
                         if (currentFrame === null && figData.layout.xaxis && figData.layout.yaxis) {{
@@ -128,6 +137,24 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     document.getElementById('empty-state-text').innerHTML = msg || 'Données insuffisantes pour tracer le profil.';
                     document.getElementById('empty-state').style.display = 'flex';
                 }}
+                // Retour au cadrage par défaut de la figure AFFICHÉE : ses plages explicites
+                // (currentFrame : profils en travers), ou le cadrage automatique sur toutes
+                // ses données (profil en long). Le "reset" natif de Plotly revient aux plages
+                // du premier affichage, qui avec Plotly.react peuvent être celles d'une autre
+                // vue (constaté : un double-clic sur le profil en long ramenait au cadrage de
+                // l'onglet Hydraulique). La vue ainsi retrouvée est mémorisée comme une autre.
+                function resetToDefaultView() {{
+                    var graphDiv = document.getElementById('graph');
+                    if (!graphDiv.layout || graphDiv.style.display === 'none') return;
+                    if (currentFrame !== null) {{
+                        var frame = JSON.parse(currentFrame);
+                        Plotly.relayout(graphDiv, {{'xaxis.range': frame[0], 'yaxis.range': frame[1]}});
+                    }} else {{
+                        Plotly.relayout(graphDiv, {{'xaxis.autorange': true, 'yaxis.autorange': true}});
+                    }}
+                }}
+                document.getElementById('graph').addEventListener('dblclick', resetToDefaultView);
+
                 // Le QWebEngineView change de taille avec la fenêtre principale et les
                 // splitters ; Plotly ne le détecte pas seul, d'où ce ResizeObserver.
                 new ResizeObserver(function() {{

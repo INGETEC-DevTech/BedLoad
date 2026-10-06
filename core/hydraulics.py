@@ -1,6 +1,6 @@
 # core/hydraulics.py
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from core.models import Point, CrossSection
 
 # Limites (X gauche, X droite) de la zone dans laquelle on fait le calcul, ou None pour
@@ -11,10 +11,39 @@ from core.models import Point, CrossSection
 # (-inf, X de séparation des bras)).
 Bounds = Optional[Tuple[float, float]]
 
+# Écart de cote (m) en dessous duquel l'eau est considérée exactement au niveau d'un point
+# (arrondis de calcul flottant), pour la fermeture des lits et la détection de débordement.
+_Z_TOLERANCE = 1e-9
 
-def _empty_result(water_z: Optional[float]) -> dict:
+
+def _empty_result(water_z: Optional[float], overflow_sides: Optional[List[str]] = None) -> dict:
     return {"S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0, "water_z": water_z,
-            "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": []}
+            "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
+            "overflow_sides": overflow_sides or []}
+
+
+def free_end_levels(section: CrossSection, bounds: Bounds = None) -> Dict[str, float]:
+    """Cotes des extrémités "libres" du profil calculé, c'est-à-dire non fermées par une
+    paroi de zone d'écoulement : {"left": z, "right": z} (un côté fermé par une paroi est
+    absent). Au-dessus de l'une d'elles, l'eau déborderait hors du profil levé : ce
+    débordement n'est pas modélisé, le lit qui touche cette extrémité est ignoré (cf.
+    get_wet_beds)."""
+    points, wall_left, wall_right = clip_to_bounds(section.points, bounds)
+    if len(points) < 2:
+        return {}
+    ends = {}
+    if not wall_left:
+        ends["left"] = points[0].z
+    if not wall_right:
+        ends["right"] = points[-1].z
+    return ends
+
+
+def overflow_level(section: CrossSection, bounds: Bounds = None) -> Optional[float]:
+    """Cote la plus haute atteignable sans débordement (la plus basse des extrémités
+    libres), ou None si les deux côtés sont fermés par une paroi."""
+    ends = free_end_levels(section, bounds)
+    return min(ends.values()) if ends else None
 
 
 def suggest_arm_split(points: List[Point]) -> Optional[Point]:
@@ -107,9 +136,12 @@ def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None) -
 
     # Un lit dont une extrémité est sous l'eau commence/finit forcément au bord du profil
     # (sinon un point de coupure aurait été inséré) : fermé par une paroi, ou débordant.
+    # Une extrémité à la cote d'eau, aux arrondis près (ex. 99.4 + 3.4 = 102.80000000000001),
+    # ferme le lit : sinon une eau "exactement à ras" serait comptée comme débordante.
     return [
         bed for bed in beds
-        if (bed[0].z == water_z or wall_left) and (bed[-1].z == water_z or wall_right)
+        if (bed[0].z >= water_z - _Z_TOLERANCE or wall_left)
+        and (bed[-1].z >= water_z - _Z_TOLERANCE or wall_right)
     ]
 
 
@@ -124,9 +156,13 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     V est la vitesse moyenne Q / S, Rh le rapport global S / P (pour information).
     `wet_intervals` liste les (x_gauche, x_droite) de chaque lit, pour l'affichage, et
     `bed_discharges` le débit de chacun (même ordre) ; x_left et x_right en sont les bornes
-    extrêmes."""
+    extrêmes. `overflow_sides` liste les extrémités libres ("left", "right") que la cote
+    d'eau dépasse : l'eau y déborderait hors du profil, le lit concerné est ignoré (pas de
+    modélisation du débordement) et l'appelant doit le signaler."""
+    overflow_sides = [side for side, z in free_end_levels(section, bounds).items()
+                      if water_z > z + _Z_TOLERANCE]
     if slope <= 0 or ks <= 0:
-        return _empty_result(water_z)
+        return _empty_result(water_z, overflow_sides)
 
     beds = get_wet_beds(section, water_z, bounds)
 
@@ -146,13 +182,14 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     q_total = sum(bed_discharges)
 
     if s_total <= 0 or p_total <= 0:
-        return _empty_result(water_z)
+        return _empty_result(water_z, overflow_sides)
 
     return {
         "S": s_total, "P": p_total, "Rh": s_total / p_total, "V": q_total / s_total, "Q": q_total,
         "water_z": water_z, "x_left": beds[0][0].x, "x_right": beds[-1][-1].x,
         "wet_intervals": [(bed[0].x, bed[-1].x) for bed in beds],
         "bed_discharges": bed_discharges,
+        "overflow_sides": overflow_sides,
     }
 
 

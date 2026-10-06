@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
 import traceback
 import logging
-from core.utils import setup_logger
+from core.utils import find_storage_problem, get_base_dir, setup_logger
 from ui import theme
 
 # Le bloc QTreeView a été retiré de ce thème global : la sidebar redéfinit entièrement
@@ -185,9 +185,24 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
     msg_box.setDetailedText(error_msg)
     msg_box.exec()
 
+def check_storage_or_warn(base_dir) -> bool:
+    """Vérifie que la base et le journal pourront être écrits à côté de l'exe. Sinon,
+    explique le problème à l'utilisateur et retourne False : l'appelant ferme alors
+    l'application proprement, au lieu de planter à la première écriture (le journal, créé
+    juste après, échouerait avant même l'installation du gestionnaire d'erreurs)."""
+    problem = find_storage_problem(base_dir)
+    if problem is None:
+        return True
+    QMessageBox.critical(None, "HydroTopo ne peut pas démarrer", problem)
+    return False
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
+
+    if not check_storage_or_warn(get_base_dir()):
+        sys.exit(1)
+
     setup_logger()
     logging.info("=== Démarrage d'HydroTopo V2 ===")
     

@@ -217,9 +217,14 @@ def plot_overlay(
     water_intervals: Optional[List[Tuple[float, float]]] = None,
     calc_bounds: Optional[Tuple[float, float]] = None,
     earthworks: Optional[EarthworksResult] = None,
+    frame_all: bool = False,
 ) -> go.Figure:
     """Graphique de comparaison : les deux profils superposés, avec ligne d'eau optionnelle
-    et, si `earthworks` est fourni, les zones de déblai/remblai entre les deux."""
+    et, si `earthworks` est fourni, les zones de déblai/remblai entre les deux.
+
+    Cadrage par défaut : sur le seul profil projet (onglet Profil projet, où le projet est
+    l'objet de la saisie), ou, avec `frame_all`, sur les deux profils en entier et la ligne
+    d'eau (onglet Hydraulique, où rien ne doit sortir du cadre)."""
     xs_e, zs_e = existing.to_arrays()
     xs_p, zs_p = project.to_arrays()
     fig = go.Figure()
@@ -257,9 +262,16 @@ def plot_overlay(
     if earthworks is not None:
         _add_earthwork_summary(fig, earthworks)
     
-    # On force le cadre UNIQUEMENT sur le profil PROJET (+ 1 mètre de marge).
-    fig.update_xaxes(range=[min(xs_p) - 1, max(xs_p) + 1])
-    fig.update_yaxes(range=[min(zs_p) - 1, max(zs_p) + 1])
+    # Cadre explicite (+ 1 mètre de marge), sur le profil projet seul ou sur tout le contenu.
+    if frame_all:
+        frame_xs = all_xs
+        frame_zs = list(zs_e) + list(zs_p)
+        if water_level is not None and water_intervals:
+            frame_zs.append(water_level)
+    else:
+        frame_xs, frame_zs = xs_p, zs_p
+    fig.update_xaxes(range=[min(frame_xs) - 1, max(frame_xs) + 1])
+    fig.update_yaxes(range=[min(frame_zs) - 1, max(frame_zs) + 1])
 
     return fig
 

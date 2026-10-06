@@ -3,10 +3,11 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import logging
-from core.utils import get_base_dir
+from core.utils import DATA_DIR_NAME, DB_FILE_NAME, get_base_dir
 
-# Construction du chemin absolu dynamique
-DB_PATH = get_base_dir() / "data" / "hydrotopo.db"
+# Construction du chemin absolu dynamique (à côté de l'exe : appli portable, cf.
+# core.utils.find_storage_problem pour la vérification des droits d'écriture au démarrage)
+DB_PATH = get_base_dir() / DATA_DIR_NAME / DB_FILE_NAME
 
 # Colonnes des points durs (amont/aval) sur la table `projects`. Un point dur est un
 # repère de terrain fixe, associé à un nom et des coordonnées (X, Z) ; le point dur

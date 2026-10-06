@@ -9,10 +9,15 @@ import plotly.graph_objects as go
 from core.earthworks import compute_earthworks
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
-from core.hydraulics import clip_to_bounds, resolve_hydraulic_result
+from core.hydraulics import (clip_to_bounds, compute_hydraulic_params, free_end_levels,
+                             overflow_level, resolve_hydraulic_result)
 from core.longitudinal import build_longitudinal_profile
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 from ui import theme
+
+# Avertissement "l'eau déborderait hors du profil" (orange, comme une alerte non bloquante).
+OVERFLOW_WARNING_COLOR = "#b45309"
+OVERFLOW_WARNING_BACKGROUND = "rgba(255, 247, 237, 0.97)"
 
 # Zones d'écoulement du calcul hydraulique (cf. ProjectParameters.hydro_zone).
 ALL_ZONE = "all"
@@ -177,10 +182,10 @@ class ProfileController:
             if hydro_source == 'existing':
                 other_params = self._to_project_parameters(project_data)
                 other_section = build_project_cross_section(other_params, name="Projet")
-                fig = plot_overlay(section, other_section, **water)
+                fig = plot_overlay(section, other_section, frame_all=True, **water)
             else:
                 other_section = self._to_cross_section(existing_data, name="Existant", allow_empty=True)
-                fig = plot_overlay(other_section, section, **water)
+                fig = plot_overlay(other_section, section, frame_all=True, **water)
         else:
             fig = plot_single_profile(section, color=color, **water)
 
@@ -241,7 +246,61 @@ class ProfileController:
                 borderwidth=1, borderpad=14, font=dict(size=13, color=theme.TEXT_SECONDARY)
             )
 
+        # --- Avertissement de débordement --- (affiché même sans résultat : c'est justement
+        # le cas où tout le lit a été ignoré et Q vaut 0)
+        warning = self._overflow_warning(section, bounds, res, calc_mode, q_target, slope, ks)
+        if warning:
+            fig.add_annotation(
+                text=warning, align="left", showarrow=False,
+                xref="paper", yref="paper", x=0.02, y=0.03, xanchor="left", yanchor="bottom",
+                bgcolor=OVERFLOW_WARNING_BACKGROUND, bordercolor=OVERFLOW_WARNING_COLOR,
+                borderwidth=1, borderpad=10, font=dict(size=12, color=OVERFLOW_WARNING_COLOR),
+            )
+
         return fig
+
+    @staticmethod
+    def _overflow_warning(section, bounds, res: Dict[str, Any], calc_mode: str,
+                          q_target: float, slope: float, ks: float) -> Optional[str]:
+        """Message à afficher quand l'eau déborderait hors du profil calculé (débordement
+        non modélisé), ou None :
+        - "Imposer H" : la cote d'eau saisie dépasse une extrémité libre du profil ;
+        - "Imposer Q" : le débit cible n'est pas atteint, la cote d'eau étant plafonnée
+          (la dichotomie ne peut pas monter au-dessus du profil sans débordement).
+        Le message rappelle la capacité maximale sans débordement, pour situer la valeur
+        saisie."""
+        level = overflow_level(section, bounds)
+        capacity = ""
+        if level is not None:
+            q_max = compute_hydraulic_params(section, level, slope, ks, bounds)["Q"]
+            capacity = (f"<br>Capacité maximale sans débordement : Q = {q_max:.2f} m³/s "
+                        f"(cote Z = {level:.2f} m NGF).")
+
+        if calc_mode == 'H_FROM_Q':
+            if res["water_z"] is not None and abs(res["Q"] - q_target) < 0.01:
+                return None
+            reason = (
+                "l'eau déborderait hors du profil (débordement non modélisé)."
+                if level is not None else
+                "la cote d'eau est plafonnée au sommet du profil calculé."
+            )
+            return (
+                f"<b>⚠ Débit cible non atteint</b> : {q_target:.2f} m³/s demandés, "
+                f"{res['Q']:.2f} m³/s calculés —<br>{reason}{capacity}"
+            )
+
+        sides = res.get("overflow_sides") or []
+        if not sides:
+            return None
+        side_label = {"left": "gauche", "right": "droite"}
+        ends = free_end_levels(section, bounds)
+        details = " et ".join(f"{side_label[side]} (Z = {ends[side]:.2f} m NGF)" for side in sides)
+        return (
+            f"<b>⚠ Débordement</b> : la cote d'eau (Z = {res['water_z']:.2f} m NGF) dépasse "
+            f"l'extrémité {details} du profil.<br>"
+            "L'eau déborderait hors du profil levé : non modélisé, le lit concerné est exclu "
+            f"du calcul.{capacity}"
+        )
 
     def _to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:
         points = dataframe_to_points(pd.DataFrame(raw_data))

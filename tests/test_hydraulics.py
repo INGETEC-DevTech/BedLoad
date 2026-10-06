@@ -91,6 +91,7 @@ def test_compute_hydraulic_params_invalid_slope_or_ks_returns_zeros(trapezoidal_
     assert res == {
         "S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0,
         "water_z": 1.0, "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
+        "overflow_sides": [],
     }
 
 
@@ -516,3 +517,120 @@ def test_single_arm_depth_is_measured_from_the_bottom_of_that_arm():
     fig = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
 
     assert list(_water_trace(fig).y) == pytest.approx([1.5, 1.5])
+
+
+# --- Débordement hors du profil : non modélisé, mais signalé ---
+
+def _overflow_warning_text(fig):
+    return next((a.text for a in fig.layout.annotations if "⚠" in (a.text or "")), None)
+
+
+def test_overflow_sides_flag_the_free_end_exceeded(trapezoidal_section):
+    """Berges à z=2 aux deux extrémités : en dessous, rien ; au-dessus, les deux côtés."""
+    assert compute_hydraulic_params(trapezoidal_section, 1.0, 0.001, 30.0)["overflow_sides"] == []
+    assert compute_hydraulic_params(trapezoidal_section, 2.0, 0.001, 30.0)["overflow_sides"] == []
+    res = compute_hydraulic_params(trapezoidal_section, 2.5, 0.001, 30.0)
+    assert res["overflow_sides"] == ["left", "right"] and res["Q"] == 0
+
+
+def test_a_wall_side_never_overflows(trapezoidal_section):
+    res = compute_hydraulic_params(trapezoidal_section, 2.5, 0.001, 30.0, bounds=(-10.0, 2.5))
+    assert res["overflow_sides"] == ["left"]
+
+
+LOW_RIGHT_END = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(0, 3), (1, 0), (4, 0), (5, 1.5)]]
+
+
+def _figure(points, **hydro):
+    from core.controller import ProfileController, ViewMode
+    data = {"hydro_source": "existing", "slope": 0.001, "ks_pro": 30.0, **hydro}
+    return ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+
+
+def test_imposed_h_above_a_profile_end_shows_an_overflow_warning():
+    """Extrémité droite à z=1.5 : avec h = 2 m l'eau déborderait à droite. Le lit est ignoré
+    (Q = 0, comme avant) mais un avertissement l'explique, avec la capacité sans débordement."""
+    fig = _figure(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=2.0)
+
+    warning = _overflow_warning_text(fig)
+    assert warning is not None
+    assert "Débordement" in warning and "droite (Z = 1.50 m NGF)" in warning
+    assert "Capacité maximale sans débordement" in warning and "Z = 1.50 m NGF" in warning
+
+
+def test_imposed_q_beyond_capacity_shows_a_warning():
+    from core.hydraulics import compute_hydraulic_params as compute
+    from core.models import CrossSection, Point
+    section = CrossSection("s", [Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in LOW_RIGHT_END])
+    capacity = compute(section, 1.5, 0.001, 30.0)["Q"]
+
+    fig = _figure(LOW_RIGHT_END, calc_mode="H_FROM_Q", q_target=capacity * 3)
+
+    warning = _overflow_warning_text(fig)
+    assert warning is not None and "Débit cible non atteint" in warning
+    assert f"{capacity:.2f} m³/s" in warning
+
+
+@pytest.mark.parametrize("hydro", [
+    dict(calc_mode="Q_FROM_H", h_eau=1.0),       # sous l'extrémité la plus basse
+    dict(calc_mode="H_FROM_Q", q_target=0.5),    # débit atteignable
+])
+def test_no_warning_when_the_water_stays_inside_the_profile(hydro):
+    assert _overflow_warning_text(_figure(LOW_RIGHT_END, **hydro)) is None
+
+
+def test_water_exactly_at_a_profile_end_despite_rounding_is_not_an_overflow():
+    """99.4 + 3.4 = 102.80000000000001 en flottant : une eau à ras de l'extrémité droite
+    (Z = 102.8) ne doit ni écarter le lit ni déclencher l'avertissement."""
+    from core.models import CrossSection, Point
+    section = CrossSection("s", [Point(x=0, z=103.0), Point(x=2, z=99.4), Point(x=4, z=102.8)])
+
+    res = compute_hydraulic_params(section, 99.4 + 3.4, 0.001, 30.0)
+
+    assert res["overflow_sides"] == []
+    assert res["Q"] > 0 and res["x_right"] == pytest.approx(4.0)
+
+
+# --- Cadrage par défaut avec l'autre profil en fond ---
+
+WIDE_EXISTING = [{"X (m)": x, "Z (m NGF)": z} for x, z in
+                 [(-10, 52), (-4, 50), (0, 48.5), (3, 47.2), (6, 47.0), (9, 47.3), (14, 49), (25, 50.5), (40, 53)]]
+
+
+def _ranges(fig):
+    return tuple(fig.layout.xaxis.range), tuple(fig.layout.yaxis.range)
+
+
+def test_hydraulics_overlay_frames_both_profiles_and_the_water_line():
+    """Projet étroit (X ~ -6 à 14) sur un terrain large (X = -10 à 40) : le cadrage par défaut
+    englobe les deux profils en entier et la ligne d'eau, avec 1 m de marge."""
+    from core.controller import ProfileController, ViewMode
+    ctrl = ProfileController()
+    params = {**ctrl.default_project_params(), "anchor_x": 3.0, "anchor_z": 47.0,
+              "hydro_source": "project", "calc_mode": "Q_FROM_H", "h_eau": 1.2, "slope": 0.003}
+
+    fig = ctrl.build_figure(WIDE_EXISTING, params, ViewMode.HYDRAULICS, show_overlay=True)
+
+    (x0, x1), (z0, z1) = _ranges(fig)
+    every_x = [x for t in fig.data if t.x for x in t.x if x is not None]
+    every_z = [z for t in fig.data if t.y for z in t.y if z is not None]
+    assert (x0, x1) == pytest.approx((min(every_x) - 1, max(every_x) + 1))
+    assert (z0, z1) == pytest.approx((min(every_z) - 1, max(every_z) + 1))
+    assert x0 <= -11 and x1 >= 41  # le profil existant entier
+    assert z1 >= _water_trace(fig).y[0] + 1
+
+
+def test_project_tab_overlay_still_frames_the_project_only():
+    """Onglet Profil projet : cadrage inchangé, sur le seul profil projet (objet de la saisie)."""
+    from core.controller import ProfileController, ViewMode
+    from core.geometry import build_project_cross_section
+    from core.models import ProjectParameters
+    ctrl = ProfileController()
+    params = {**ctrl.default_project_params(), "anchor_x": 3.0, "anchor_z": 47.0}
+    project = build_project_cross_section(ProjectParameters(**{k: v for k, v in params.items()
+                                                               if k in ProjectParameters.__dataclass_fields__}))
+    xs, zs = project.to_arrays()
+
+    fig = ctrl.build_figure(WIDE_EXISTING, params, ViewMode.PROJECT, show_overlay=True)
+
+    assert _ranges(fig) == (pytest.approx((min(xs) - 1, max(xs) + 1)), pytest.approx((min(zs) - 1, max(zs) + 1)))
