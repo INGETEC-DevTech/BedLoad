@@ -392,13 +392,13 @@ class ProjectProfileForm(QWidget):
             is_valid = x < bank_top_x
             error_msg = (
                 "Le point de raccord gauche est plus proche de l'axe du lit que le "
-                "haut de berge actuel — géométrie invalide."
+                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
             )
         else:
             is_valid = x > bank_top_x
             error_msg = (
                 "Le point de raccord droit est plus proche de l'axe du lit que le "
-                "haut de berge actuel — géométrie invalide."
+                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
             )
 
         if not is_valid:

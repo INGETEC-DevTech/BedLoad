@@ -1,8 +1,10 @@
 # ui/forms/existing_form.py
+import math
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
                                QPushButton, QLabel, QHeaderView, QApplication, QMenu)
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtGui import QBrush, QColor, QKeySequence
 
 from ui import theme
 
@@ -26,6 +28,22 @@ class _PasteableTableWidget(QTableWidget):
             self._form.delete_selected_rows()
             return
         super().keyPressEvent(event)
+
+
+def _parse_value(text: str):
+    """Lit une cellule (virgule française acceptée). Retourne (valeur, erreur) : valeur
+    None si la cellule est vide ou invalide, erreur None si la cellule est valide ou vide.
+    "nan" / "inf" sont refusés : float() les accepte, mais ils fausseraient les calculs."""
+    text = text.strip().replace(',', '.')
+    if not text:
+        return None, None
+    try:
+        value = float(text)
+    except ValueError:
+        return None, "Valeur non numérique"
+    if not math.isfinite(value):
+        return None, "Valeur non numérique"
+    return value, None
 
 
 class ExistingProfileForm(QWidget):
@@ -63,7 +81,15 @@ class ExistingProfileForm(QWidget):
         self.table.setHorizontalHeaderLabels(["X (m)", "Z (m NGF)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.main_layout.addWidget(self.table)
-        
+
+        # Signale les lignes ignorées (valeur invalide ou manquante) : sans lui, elles
+        # disparaissaient des calculs sans que rien ne le dise.
+        self.lbl_invalid = QLabel()
+        self.lbl_invalid.setWordWrap(True)
+        self.lbl_invalid.setStyleSheet(theme.qss("font-size: ${FONT_SIZE_SM}px; color: $DANGER;"))
+        self.lbl_invalid.hide()
+        self.main_layout.addWidget(self.lbl_invalid)
+
         self.btn_add_row = QPushButton("Ajouter un point")
         self.main_layout.addWidget(self.btn_add_row)
         
@@ -86,35 +112,82 @@ class ExistingProfileForm(QWidget):
         self._is_loading = False
         self.on_item_changed()
         
+    def _cell_text(self, row: int, col: int) -> str:
+        item = self.table.item(row, col)
+        return item.text() if item is not None else ""
+
+    def _row_errors(self, row: int) -> dict:
+        """Erreurs de la ligne, par colonne ({} si la ligne est valide ou entièrement vide).
+        Une ligne à moitié remplie est en erreur : le point serait sinon ignoré sans bruit."""
+        texts = [self._cell_text(row, col) for col in range(2)]
+        if not any(t.strip() for t in texts):
+            return {}
+        errors = {}
+        for col, text in enumerate(texts):
+            _, error = _parse_value(text)
+            if error is None and not text.strip():
+                error = "Valeur manquante"
+            if error is not None:
+                errors[col] = error
+        return errors
+
     def get_data(self) -> list:
-        """Extrait les données de la table sous forme de liste de dictionnaires."""
+        """Extrait les points valides de la table sous forme de liste de dictionnaires.
+        Les lignes vides ou invalides sont ignorées (et signalées, cf. _refresh_validation)."""
         data = []
         for row in range(self.table.rowCount()):
-            # Sécurisation : on vérifie que les cellules existent bien
-            item_x = self.table.item(row, 0)
-            item_z = self.table.item(row, 1)
-            
-            if not item_x or not item_z:
+            if self._row_errors(row):
                 continue
-                
-            # Nettoyage des espaces et remplacement de la virgule française
-            str_x = item_x.text().strip().replace(',', '.')
-            str_z = item_z.text().strip().replace(',', '.')
-            
-            # On ignore les lignes en cours de saisie (vides)
-            if not str_x or not str_z:
-                continue
-                
-            try:
-                x = float(str_x)
-                z = float(str_z)
-                data.append({"X (m)": x, "Z (m NGF)": z})
-            except ValueError:
-                # TODO UX : Mettre la cellule en rouge si la valeur n'est pas un nombre valide
-                continue
-                
+            x, _ = _parse_value(self._cell_text(row, 0))
+            z, _ = _parse_value(self._cell_text(row, 1))
+            if x is None or z is None:
+                continue  # ligne entièrement vide
+            data.append({"X (m)": x, "Z (m NGF)": z})
         return data
-        
+
+    def _refresh_validation(self):
+        """Met en rouge les cellules invalides (avec la cause en infobulle) et affiche sous
+        le tableau les lignes ignorées. Signaux coupés : changer le fond d'une cellule émet
+        itemChanged, ce qui relancerait sauvegarde et validation en boucle."""
+        invalid_rows = []
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                errors = self._row_errors(row)
+                if errors:
+                    invalid_rows.append(row + 1)
+                for col in range(2):
+                    item = self.table.item(row, col)
+                    if item is None:
+                        if col not in errors:
+                            continue
+                        # Cellule jamais créée (ex. collage d'une seule colonne) : on la crée
+                        # pour pouvoir la mettre en rouge.
+                        item = QTableWidgetItem("")
+                        self.table.setItem(row, col, item)
+                    if col in errors:
+                        item.setBackground(QBrush(QColor(theme.DANGER_LIGHT)))
+                        item.setToolTip(f"{errors[col]} : ce point est ignoré.")
+                    else:
+                        item.setBackground(QBrush())
+                        item.setToolTip("")
+        finally:
+            self.table.blockSignals(False)
+
+        if len(invalid_rows) == 1:
+            self.lbl_invalid.setText(
+                f"Ligne {invalid_rows[0]} ignorée : valeur non numérique ou manquante. Ce point "
+                "n'est ni pris en compte dans les calculs, ni enregistré : corrigez-le pour "
+                "ne pas le perdre."
+            )
+        elif invalid_rows:
+            self.lbl_invalid.setText(
+                f"{len(invalid_rows)} lignes ignorées ({', '.join(map(str, invalid_rows))}) : "
+                "valeur non numérique ou manquante. Ces points ne sont ni pris en compte dans "
+                "les calculs, ni enregistrés : corrigez-les pour ne pas les perdre."
+            )
+        self.lbl_invalid.setVisible(bool(invalid_rows))
+
     def set_data(self, data: list):
         """Peuple la table à partir des données chargées depuis la base SQLite."""
         self._is_loading = True
@@ -124,9 +197,11 @@ class ExistingProfileForm(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(str(point.get("X (m)", 0.0))))
             self.table.setItem(i, 1, QTableWidgetItem(str(point.get("Z (m NGF)", 0.0))))
         self._is_loading = False
-        
+        self._refresh_validation()
+
     def on_item_changed(self, item=None):
         if not self._is_loading:
+            self._refresh_validation()
             self.data_changed.emit(self.get_data())
 
     def delete_selected_rows(self):
@@ -159,7 +234,7 @@ class ExistingProfileForm(QWidget):
     def paste_from_clipboard(self):
         """Colle une grille TSV/CSV Excel dans la table, à partir de la cellule active
         (ou (0,0) si aucune sélection). Aucune validation ici : get_data() filtre déjà
-        les valeurs non numériques au moment de l'extraction."""
+        les valeurs non numériques, et on_item_changed() les signale en rouge."""
         text = QApplication.clipboard().text()
         if not text:
             return

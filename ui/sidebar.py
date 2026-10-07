@@ -263,6 +263,9 @@ class Sidebar(QWidget):
     # Points durs ou distance d'un profil modifiés : pentes calculées et positions des
     # profils de ce projet ont pu changer (MainWindow recharge le profil ouvert).
     project_data_changed = pyqtSignal(int)
+    # Arborescence reconstruite (création, renommage, suppression...) : ce qui en résume le
+    # contenu (récapitulatif d'un projet) est à recalculer.
+    tree_refreshed = pyqtSignal()
 
     def __init__(self, db_manager: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -281,6 +284,9 @@ class Sidebar(QWidget):
         # Libellés (projet, scénario, profil) ou ("Draft", brouillon) de la sélection
         # courante, pour le bandeau de contexte.
         self._context_labels = None
+        # Libellés de tout le chemin du nœud sélectionné, quel que soit son type (ex.
+        # (projet, scénario) pour un scénario), ou None.
+        self._selection_labels = None
 
         # 1. Contraste : Fond légèrement grisé pour détacher le panneau
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -487,6 +493,7 @@ class Sidebar(QWidget):
             self._known_keys.add(key)
 
         self._restore_selection()
+        self.tree_refreshed.emit()
 
     def _restore_selection(self):
         """Après reconstruction du modèle, resélectionne l'élément qui l'était. S'il a
@@ -500,6 +507,7 @@ class Sidebar(QWidget):
         if item is None:
             self._active_path = []
             self._context_labels = None
+            self._selection_labels = None
             self.selection_cleared.emit()
             return
 
@@ -513,7 +521,8 @@ class Sidebar(QWidget):
         chain = self._chain(item)
         self._active_path = [it.data(Qt.ItemDataRole.UserRole) for it in chain]
         is_editable = self._active_path[-1]["type"] in _EDITABLE_TYPES
-        self._context_labels = tuple(it.text() for it in chain) if is_editable else None
+        self._selection_labels = tuple(it.text() for it in chain)
+        self._context_labels = self._selection_labels if is_editable else None
 
     def _select(self, key: tuple):
         """Sélectionne dans l'arbre le nœud de clé donnée (typiquement juste après un
@@ -534,6 +543,16 @@ class Sidebar(QWidget):
         Alimente le bandeau de contexte de la fenêtre principale, qui ne reçoit sinon
         qu'un identifiant numérique via les signaux de sélection."""
         return self._context_labels
+
+    def select_scenario(self, scenario_id: int):
+        """Sélectionne un scénario comme si l'utilisateur avait cliqué dessus (ouvre son
+        profil en long) — ex. double-clic dans le récapitulatif du projet."""
+        self._select((SCENARIO, scenario_id))
+
+    def selection_labels(self):
+        """Libellés du chemin du nœud sélectionné, quel que soit son type — ex. (projet,
+        scénario) pour un scénario — ou None. Sert à légender l'export du profil en long."""
+        return self._selection_labels
 
     def on_item_clicked(self, index):
         item = self.model.itemFromIndex(index)

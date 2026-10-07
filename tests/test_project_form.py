@@ -4,7 +4,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from core.controller import ProfileController
 from ui.dialogs.point_picker_dialog import PointPickerDialog
@@ -57,3 +57,21 @@ def test_anchor_message_is_reset_when_another_profile_is_loaded(form):
     # Et une saisie ultérieure ne le fait pas réapparaître.
     form.inputs['anchor_x'].setValue(6.0)
     assert not anchor_message_shown(form)
+
+
+def test_invalid_connect_point_message_names_the_floodplain_end(form, monkeypatch):
+    """Le point choisi (X = 6) est à droite du bout gauche du profil projet : refusé, avec
+    la règle réelle (bout du lit majeur, ou haut de berge sans lit majeur), comme le
+    message affiché quand une modification rend un raccord invalide."""
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda parent, title, text, *a, **k: warnings.append((title, text))))
+
+    form._pick_connect_point('left')
+
+    assert warnings == [(
+        "Point de raccord invalide",
+        "Le point de raccord gauche est plus proche de l'axe du lit que le bout du lit "
+        "majeur (ou le haut de berge) actuel — géométrie invalide.",
+    )]
+    assert form._connect_left is None

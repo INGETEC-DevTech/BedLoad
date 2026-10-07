@@ -10,7 +10,7 @@ import pytest
 # QtWebEngine (graphique de la fenêtre principale) exige d'être importé avant la
 # création de la QApplication.
 from PyQt6 import QtWebEngineWidgets  # noqa: F401
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QInputDialog,
                              QLabel, QMessageBox, QWidget)
 
@@ -385,11 +385,21 @@ class _FakePlotView(QWidget):
     """Remplace PlotView : son QWebEngineView (Chromium) ne démarre pas sans affichage et
     fait tomber le processus en mode offscreen. On ne garde que ce que MainWindow utilise."""
 
+    expand_toggled = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.lbl_title = QLabel()
         self.figures = []
         self.view_keys = []
+        self.expanded = False
+        self.export_caption = ""
+
+    def set_expanded(self, expanded):
+        self.expanded = expanded
+
+    def prepare_layout_change(self, then):
+        then()
 
     def update_plot(self, fig, error_message=None, view_key=None):
         self.figures.append((fig, error_message))
@@ -437,8 +447,8 @@ def test_editing_a_draft_never_touches_the_profile_with_the_same_id(main_window)
 
 def test_each_profile_draft_and_tab_gets_its_own_view_key(main_window):
     """Le graphique mémorise le zoom par clé de vue : une clé par (profil ou brouillon,
-    onglet), jamais partagée entre un profil et un brouillon de même id, et aucune clé pour
-    le profil en long (qui ne mémorise rien)."""
+    onglet), jamais partagée entre un profil et un brouillon de même id, et une par
+    scénario pour son profil en long."""
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
     profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
@@ -459,7 +469,7 @@ def test_each_profile_draft_and_tab_gets_its_own_view_key(main_window):
     assert fake.view_keys[-1] == f"profile:{profile_id}:hydraulics"
 
     click(main_window.sidebar, (SCENARIO, scenario_id))
-    assert fake.view_keys[-1] is None
+    assert fake.view_keys[-1] == f"scenario:{scenario_id}:longitudinal"
 
     main_window.tabs.setCurrentIndex(0)
     click(main_window.sidebar, (DRAFT, draft_id))
@@ -503,7 +513,54 @@ def test_export_image_name_follows_what_is_displayed(main_window):
     main_window.tabs.setCurrentIndex(2)
     assert main_window.plot_view.export_name == "PK 120 - Hydraulique"
     click(main_window.sidebar, (SCENARIO, scenario_id))
-    assert main_window.plot_view.export_name == "Profil en long"
+    assert main_window.plot_view.export_name == "S - Profil en long"
+
+
+def test_exported_image_caption_names_project_scenario_and_profile(main_window):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 120", 120.0)
+    db.save_profile_state(profile_id, POINTS_2, {})
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (PROFILE, profile_id))
+    main_window.tabs.setCurrentIndex(2)
+    assert main_window.plot_view.export_caption == "P › S › PK 120 — Hydraulique"
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    assert main_window.plot_view.export_caption == "P › S — Profil en long"
+
+
+def test_expanding_the_plot_hides_the_panels_and_restores_them(main_window):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (PROFILE, profile_id))
+    sizes = main_window._work_splitter.sizes()
+
+    main_window.plot_view.expand_toggled.emit()
+    assert main_window.sidebar.isHidden() and main_window.forms_stack.isHidden()
+    assert main_window.plot_view.expanded
+    assert main_window._exit_expanded_shortcut.isEnabled()
+
+    main_window._exit_expanded_shortcut.activated.emit()  # Échap
+    assert not main_window.sidebar.isHidden() and not main_window.forms_stack.isHidden()
+    assert not main_window.plot_view.expanded
+    assert not main_window._exit_expanded_shortcut.isEnabled()
+    assert main_window._work_splitter.sizes() == sizes
+
+
+def test_reducing_the_longitudinal_plot_keeps_the_forms_hidden(main_window):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+
+    main_window.toggle_plot_expanded()
+    main_window.toggle_plot_expanded()
+
+    assert not main_window.sidebar.isHidden()
+    assert main_window.forms_stack.isHidden()
 
 
 POINTS_2 = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
@@ -582,6 +639,73 @@ def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):
 
     assert main_window._current_target is None
     assert main_window.plot_view.lbl_title.text() == "Profil en long du scénario"
+
+
+def test_scenario_longitudinal_carries_the_earthworks_of_its_profiles(main_window):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    existing = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(-5, 52), (0, 49), (5, 48), (10, 49), (20, 52)]]
+    db.save_profile_state(profile_id, existing, {"anchor_z": 48.5})
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+
+    fig, _ = main_window.plot_view.figures[-1]
+    trace = next(t for t in fig.data if t.legendgroup == "earthworks" and t.text)
+    assert list(trace.x) == [0.0] and "Déblai / remblai" in trace.text[0]
+
+
+def test_project_click_shows_its_summary_and_a_scenario_click_leaves_it(main_window):
+    db = main_window.db_manager
+    project_id = db.create_project("Rivière X")
+    scenario_id = db.create_scenario(project_id, "Base")
+    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    main_window.sidebar.refresh_tree()
+
+    click(main_window.sidebar, (PROJECT, project_id))
+    assert main_window.work_stack.currentWidget() is main_window.summary_view
+    assert main_window.summary_view.lbl_title.text() == "Projet « Rivière X »"
+    assert main_window.summary_view.table.rowCount() == 1
+
+    # Double-clic sur le scénario : son profil en long, formulaires et graphique de retour.
+    main_window.summary_view.table.cellDoubleClicked.emit(0, 0)
+    assert main_window.work_stack.currentWidget() is main_window._work_splitter
+    assert main_window.plot_view.lbl_title.text() == "Profil en long du scénario"
+
+
+def test_project_summary_follows_scenario_changes(main_window):
+    db = main_window.db_manager
+    project_id = db.create_project("P")
+    db.create_scenario(project_id, "Base")
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (PROJECT, project_id))
+
+    db.create_scenario(project_id, "Variante")
+    main_window.sidebar.refresh_tree()
+
+    assert main_window.summary_view.table.rowCount() == 2
+
+
+def test_profile_saved_with_legacy_excel_parameters_still_opens(main_window):
+    """d50, x_end_*, keep_existing_slope, delete_point_*_bank : retirés du modèle, mais
+    encore présents dans d'anciens profils enregistrés."""
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    legacy = {"d50": 0.004, "x_end_profile_left": 0.1, "x_end_profile_right": 11.0,
+              "x_end_equals_profile_width": False, "x_end_rd": 11.0, "keep_existing_slope": False,
+              "delete_point_left_bank": False, "delete_point_right_bank": True}
+    db.save_profile_state(profile_id, POINTS_2, {"anchor_z": 0.2, "bed_width": 3.25, **legacy})
+    main_window.sidebar.refresh_tree()
+
+    for tab in range(3):
+        main_window.tabs.setCurrentIndex(tab)
+        click(main_window.sidebar, (PROFILE, profile_id))
+        fig, error = main_window.plot_view.figures[-1]
+        assert fig is not None and error is None
+    assert main_window.form_project.get_data()["bed_width"] == 3.25
+    assert not set(legacy) & set(main_window.form_project.get_data())
 
 
 def test_deleting_the_open_draft_returns_to_the_welcome_page(main_window):

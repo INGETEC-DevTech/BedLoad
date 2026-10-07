@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from core.earthworks import CUT, EarthworksResult
 from core.hard_points import format_slope
 from core.models import CrossSection
-from core.longitudinal import LongitudinalProfile
+from core.longitudinal import LongitudinalProfile, StationEarthworks
 
 EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
@@ -23,6 +23,10 @@ STATION_COLOR = "#ced4da"       # gris clair : position des profils en travers (
 STATION_LABEL_COLOR = "#495057" # gris foncé : nom de ces profils
 CUT_COLOR = "#d62728"        # rouge : déblai (terrain existant à enlever)
 FILL_COLOR = "#ff7f0e"       # orange : remblai (matériaux à ajouter)
+EARTHWORKS_LEGEND_GROUP = "earthworks"  # déblais / remblais du scénario (profil en long)
+GRID_COLOR = "#e3e6e9"       # grille principale
+MINOR_GRID_COLOR = "#f3f4f6" # grille secondaire, entre les graduations principales
+MINOR_GRID_DIVISIONS = 2     # intervalles de grille secondaire par intervalle principal
 # Surface en dessous de laquelle une zone n'est pas étiquetée sur le graphique (elle reste
 # identifiable au survol) : évite d'empiler des étiquettes sur de minuscules zones.
 _MIN_LABELLED_AREA = 0.01
@@ -43,15 +47,27 @@ def _apply_common_layout(fig: go.Figure, title: str) -> go.Figure:
         paper_bgcolor="#ffffff", # Se fond parfaitement avec les onglets blancs
         autosize=True,
         margin=dict(l=50, r=20, t=60, b=50),
+        # Légende encadrée, pour la détacher nettement du graphique.
         legend=dict(
             orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-            font=dict(size=11, color="#495057")
+            font=dict(size=11, color="#495057"),
+            bgcolor="rgba(255, 255, 255, 0.95)", bordercolor="#ced4da", borderwidth=1,
         ),
         hovermode="x unified",
         uirevision="keep_state",
-        # Grille subtile et moderne
-        xaxis=dict(showgrid=True, gridwidth=1, gridcolor="#f1f3f5", zeroline=False),
-        yaxis=dict(showgrid=True, gridwidth=1, gridcolor="#f1f3f5", zeroline=False),
+        # Souris en mode déplacement par défaut (glisser = déplacer la vue) : le zoom au
+        # cadre reste disponible dans la barre d'outils, et Ctrl + molette zoome.
+        dragmode="pan",
+        # Grille principale discrète, et grille secondaire plus pâle : une seule ligne au
+        # milieu de chaque intervalle principal (MINOR_GRID_DIVISIONS ; Plotly en mettait 4
+        # par défaut, trop chargé). Les pas sont choisis par Plotly selon le zoom (ex. 5 m /
+        # 2.5 m, puis 0.5 m / 0.25 m) : ils restent lisibles à toutes les échelles.
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor=GRID_COLOR, zeroline=False,
+                   minor=dict(showgrid=True, gridwidth=1, gridcolor=MINOR_GRID_COLOR,
+                              nticks=MINOR_GRID_DIVISIONS)),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor=GRID_COLOR, zeroline=False,
+                   minor=dict(showgrid=True, gridwidth=1, gridcolor=MINOR_GRID_COLOR,
+                              nticks=MINOR_GRID_DIVISIONS)),
     )
     # Axes orthonormés : 1 m écran en X = 1 m écran en Z.
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -206,9 +222,13 @@ def plot_single_profile(
 
     fig = _apply_common_layout(fig, section.name)
         
-    # On applique la même logique de cadre strict (+ 1 mètre de marge)
+    # On applique la même logique de cadre strict (+ 1 mètre de marge), ligne d'eau comprise :
+    # en cas de débordement, elle passe au-dessus du point le plus haut du profil.
+    frame_zs = list(zs)
+    if water_level is not None and water_intervals:
+        frame_zs.append(water_level)
     fig.update_xaxes(range=[min(xs) - 1, max(xs) + 1])
-    fig.update_yaxes(range=[min(zs) - 1, max(zs) + 1])
+    fig.update_yaxes(range=[min(frame_zs) - 1, max(frame_zs) + 1])
     
     return fig
 
@@ -279,6 +299,71 @@ def plot_overlay(
     return fig
 
 
+def _earthworks_hover(station: StationEarthworks) -> str:
+    if not station.computed:
+        return f"<b>Déblai / remblai</b> : non calculé ({station.note})"
+    return (
+        f'<b>Déblai / remblai</b> : <span style="color:{CUT_COLOR}">déblai {station.cut:.2f} m²</span>'
+        f' · <span style="color:{FILL_COLOR}">remblai {station.fill:.2f} m²</span>'
+        f" · bilan {station.cut - station.fill:+.2f} m²"
+    )
+
+
+def _add_station_earthworks(fig: go.Figure, profile: LongitudinalProfile) -> None:
+    """Déblai / remblai de chaque profil en travers, au survol de sa position (une ligne de
+    plus dans l'info-bulle commune, cf. hovermode "x unified"), et somme sur le scénario
+    dans la légende. Les marqueurs sont invisibles : ils ne servent qu'à porter l'info-bulle,
+    placés sur le TN existant (ou, à défaut, sur le projet) du profil."""
+    if not profile.earthworks:
+        return
+    z_at = dict(zip(profile.pk_project, profile.z_project))
+    z_at.update(zip(profile.pk_existing, profile.z_existing))
+
+    xs, ys, texts = [], [], []
+    for station in profile.earthworks:
+        if station.distance in z_at:
+            xs.append(station.distance)
+            ys.append(z_at[station.distance])
+            texts.append(_earthworks_hover(station))
+
+    # Porteur des info-bulles : absent de la légende, mais dans le même groupe que les
+    # entrées ci-dessous (cliquer sur le groupe dans la légende masque aussi les info-bulles).
+    fig.add_trace(
+        go.Scatter(
+            x=xs, y=ys, mode="markers", name="Déblai / remblai", showlegend=False,
+            legendgroup=EARTHWORKS_LEGEND_GROUP,
+            marker=dict(size=10, color=CUT_COLOR, opacity=0),
+            text=texts, hovertemplate="%{text}<extra></extra>",
+        )
+    )
+
+    # Somme sur le scénario, dans la légende : un groupe titré, une entrée par grandeur
+    # (déblai en rouge, remblai en orange, comme sur les profils en travers), plutôt qu'une
+    # seule longue ligne.
+    computed = [s for s in profile.earthworks if s.computed]
+    cut = sum(s.cut for s in computed)
+    fill = sum(s.fill for s in computed)
+    balance = cut - fill
+    title = "<b>Déblais / remblais du scénario</b><br><i>somme des surfaces en coupe</i>"
+    if len(computed) < len(profile.earthworks):
+        title += f"<br><i>{len(computed)} profils calculés sur {len(profile.earthworks)}</i>"
+    meaning = "excédent" if balance > 0 else "apport" if balance < 0 else "équilibré"
+    entries = [
+        (f"Déblai : <b>{cut:.2f} m²</b>", dict(symbol="square", size=11, color=CUT_COLOR)),
+        (f"Remblai : <b>{fill:.2f} m²</b>", dict(symbol="square", size=11, color=FILL_COLOR)),
+        (f"Bilan : <b>{balance:+.2f} m²</b> ({meaning})",
+         dict(symbol="line-ew", size=11, line=dict(width=2, color="#495057"))),
+    ]
+    for i, (name, marker) in enumerate(entries):
+        fig.add_trace(
+            go.Scatter(
+                x=[None], y=[None], mode="markers", name=name, marker=marker,
+                legendgroup=EARTHWORKS_LEGEND_GROUP, hoverinfo="skip",
+                legendgrouptitle=dict(text=title, font=dict(size=11, color="#495057")) if i == 0 else None,
+            )
+        )
+
+
 def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
     """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
     (anchor_z), chacun tracé en fonction de la distance au premier point dur. Contrairement
@@ -322,6 +407,8 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
         )
     )
 
+    _add_station_earthworks(fig, profile)
+
     # Points durs (repères de terrain fixes) : reliés par un trait pointillé qui matérialise
     # les tronçons de pente (pente affichée en m/m, comme dans l'onglet Hydraulique), et
     # chacun identifié par son nom au-dessus de son marqueur.
@@ -362,5 +449,12 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
     ))
     # On annule l'échelle orthonormée héritée de _apply_common_layout : non pertinente ici.
     fig.update_yaxes(scaleanchor=None, scaleratio=None)
+    # Légende verticale à droite du graphique : elle compte plus d'entrées que sur les
+    # profils en travers (dont le groupe des déblais / remblais) et, au-dessus du graphique,
+    # elle s'étalait sur plusieurs lignes jusqu'à recouvrir le titre.
+    fig.update_layout(legend=dict(
+        orientation="v", x=1.01, xanchor="left", y=1, yanchor="top",
+        tracegroupgap=12,
+    ))
 
     return fig

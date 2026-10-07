@@ -85,13 +85,14 @@ def test_compute_hydraulic_params_matches_hand_calculation(trapezoidal_section):
 @pytest.mark.parametrize("slope,ks", [(0.0, 30.0), (-0.001, 30.0), (0.001, 0.0), (0.001, -5.0)])
 def test_compute_hydraulic_params_invalid_slope_or_ks_returns_zeros(trapezoidal_section, slope, ks):
     """Une pente ou un coefficient de Strickler nul ou négatif doit renvoyer un résultat neutre,
-    et ne jamais lever d'exception (division par zéro potentielle sinon)."""
+    et ne jamais lever d'exception (division par zéro potentielle sinon). Seule la ligne
+    d'eau (water_intervals) reste fournie : la cote d'eau, elle, est connue."""
     res = compute_hydraulic_params(trapezoidal_section, water_z=1.0, slope=slope, ks=ks)
 
     assert res == {
         "S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0,
         "water_z": 1.0, "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
-        "overflow_sides": [],
+        "overflow_sides": [], "water_intervals": [(0.5, 4.5)],
     }
 
 
@@ -548,14 +549,58 @@ def _figure(points, **hydro):
 
 
 def test_imposed_h_above_a_profile_end_shows_an_overflow_warning():
-    """Extrémité droite à z=1.5 : avec h = 2 m l'eau déborderait à droite. Le lit est ignoré
-    (Q = 0, comme avant) mais un avertissement l'explique, avec la capacité sans débordement."""
+    """Extrémité droite à z=1.5 : avec h = 2 m l'eau déborderait à droite. Le débit n'est
+    pas calculable, un avertissement l'explique, avec la capacité sans débordement."""
     fig = _figure(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=2.0)
 
     warning = _overflow_warning_text(fig)
     assert warning is not None
     assert "Débordement" in warning and "droite (Z = 1.50 m NGF)" in warning
     assert "Capacité maximale sans débordement" in warning and "Z = 1.50 m NGF" in warning
+    assert "débit non calculable" in warning
+
+
+def _results_text(fig):
+    return next((a.text for a in fig.layout.annotations if "Résultats hydrauliques" in (a.text or "")), None)
+
+
+def test_imposed_h_overflow_keeps_the_water_line_up_to_the_profile_end():
+    """Le trait ne disparaît plus : il va du point où l'eau coupe la berge gauche (z = 3 en
+    X = 0 → z = 2 en X = 1/3) jusqu'à l'extrémité droite du profil, à la cote saisie, et le
+    cadre l'inclut. Les résultats restent affichés, débit "non calculable"."""
+    fig = _figure(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=2.0)
+
+    water = _water_trace(fig)
+    assert list(water.x) == pytest.approx([1 / 3, 5.0])
+    assert list(water.y) == pytest.approx([2.0, 2.0])
+    results = _results_text(fig)
+    assert "Débit (Q) : non calculable (débordement)" in results
+    assert "Tirant d'eau (h) :</b> 2.00 m" in results
+    assert "Répartition du débit" not in results
+
+
+def test_imposed_h_above_the_whole_profile_spans_it_entirely_and_is_framed():
+    fig = _figure(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=5.0)
+
+    assert list(_water_trace(fig).x) == pytest.approx([0.0, 5.0])
+    assert fig.layout.yaxis.range[1] >= 5.0 + 1 - 1e-9
+
+
+def test_imposed_q_beyond_capacity_leaves_the_water_at_the_maximum_level():
+    """Débit trop fort : l'eau reste au niveau maximal sans débordement (extrémité droite,
+    z = 1.5), avec la capacité correspondante, au lieu de retomber à Q = 0 sans trait."""
+    from core.hydraulics import compute_hydraulic_params as compute
+    from core.models import CrossSection, Point
+    section = CrossSection("s", [Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in LOW_RIGHT_END])
+    capacity = compute(section, 1.5, 0.001, 30.0)["Q"]
+
+    fig = _figure(LOW_RIGHT_END, calc_mode="H_FROM_Q", q_target=capacity * 3)
+
+    water = _water_trace(fig)
+    assert list(water.y) == pytest.approx([1.5, 1.5])
+    assert water.x[-1] == pytest.approx(5.0)
+    results = _results_text(fig)
+    assert f"{capacity:.2f} m³/s (cible {capacity * 3:.2f} m³/s non atteinte)" in results
 
 
 def test_imposed_q_beyond_capacity_shows_a_warning():

@@ -225,6 +225,24 @@ def test_longitudinal_data_is_per_scenario(tmp_path):
     assert [r[0] for r in db.get_longitudinal_data(scenario_b)] == [50.0]
 
 
+def test_scenario_profile_states_are_per_scenario_and_sorted_by_distance(tmp_path):
+    db = make_db(tmp_path)
+    project_id = db.create_project("P")
+    scenario_a = db.create_scenario(project_id, "A")
+    scenario_b = db.create_scenario(project_id, "B")
+    far = db.create_or_get_profile(scenario_a, "Aval", 200.0)
+    db.create_or_get_profile(scenario_a, "Amont", 100.0)
+    db.create_or_get_profile(scenario_b, "Seul", 50.0)
+    points = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
+    db.save_profile_state(far, points, {"anchor_z": 0.2})
+
+    states = db.get_scenario_profile_states(scenario_a)
+
+    assert [(s["name"], s["distance"]) for s in states] == [("Amont", 100.0), ("Aval", 200.0)]
+    assert states[1]["existing_data"] == points
+    assert states[1]["project_params"]["anchor_z"] == 0.2
+
+
 # --- Création de scénario avec conservation des profils d'un scénario existant ---
 
 def test_create_scenario_without_source_starts_empty(tmp_path):

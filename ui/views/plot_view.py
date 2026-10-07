@@ -5,8 +5,10 @@ import re
 import tempfile
 from pathlib import Path
 
+from html import escape
+
 import plotly
-from PyQt6.QtCore import Qt, QUrl, QTimer
+from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
                              QFileDialog, QMessageBox)
@@ -41,11 +43,20 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 #graph {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
                 #empty-state {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; display: flex; flex-direction: column; justify-content: center; align-items: center; background-color: {theme.SURFACE}; font-family: {theme.FONT_FAMILY}; color: {theme.TEXT_MUTED}; font-size: {theme.FONT_SIZE_TITLE}px; }}
                 .icon-placeholder {{ margin-bottom: {theme.SPACE_LG}px; opacity: 0.5; }}
+                /* Réticule et coordonnées du curseur : par-dessus le graphique, sans jamais
+                   intercepter la souris (Plotly continue de recevoir clics et survols). */
+                .cursor-overlay {{ position: absolute; z-index: 3; pointer-events: none; display: none; }}
+                #crosshair-v {{ width: 0; border-left: 1px dashed rgba(73, 80, 87, 0.45); }}
+                #crosshair-h {{ height: 0; border-top: 1px dashed rgba(73, 80, 87, 0.45); }}
+                #cursor-readout {{ padding: 3px 8px; background: rgba(255, 255, 255, 0.92); border: 1px solid {theme.BORDER}; border-radius: {theme.RADIUS_SM}px; font-family: {theme.FONT_FAMILY}; font-size: {theme.FONT_SIZE_SM + 1}px; color: {theme.TEXT_SECONDARY}; white-space: pre; font-variant-numeric: tabular-nums; }}
             </style>
         </head>
         <body>
             <div id="card">
                 <div id="graph"></div>
+                <div id="crosshair-v" class="cursor-overlay"></div>
+                <div id="crosshair-h" class="cursor-overlay"></div>
+                <div id="cursor-readout" class="cursor-overlay"></div>
                 <div id="empty-state">
                     <svg class="icon-placeholder" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M3 3v18h18"/><path d="M18 9l-5 5-4-4-4 4"/>
@@ -58,13 +69,16 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 // (un profil, un onglet) est retrouvé quand il la quitte pour une autre (ex.
                 // le profil en long) puis y revient. Plotly (uirevision) ne le garde qu'entre
                 // deux figures successives, d'où cette mémoire par clé de vue, fournie par
-                // Python. Sans clé, ou si la figure n'a pas de cadrage explicite (profil en
-                // long), rien n'est mémorisé. Une vue n'est restaurée que si le cadrage par
-                // défaut de la figure n'a pas changé depuis (sinon les données ont bougé et le
-                // zoom mémorisé ne correspondrait plus à rien : on repart du cadrage par défaut).
+                // Python. Sans clé, rien n'est mémorisé. Une vue n'est restaurée que si le
+                // cadrage par défaut de la figure n'a pas changé depuis (sinon les données ont
+                // bougé et le zoom mémorisé ne correspondrait plus à rien : on repart du
+                // cadrage par défaut). Ce cadrage est celui de la figure (profils en travers)
+                // ou, si elle n'en a pas (profil en long, en cadrage automatique), l'étendue
+                // de ses données, calculée par Python (cf. data_extent).
                 var viewMemory = {{}};
                 var currentViewKey = null;
-                var currentFrame = null;
+                var currentFrame = null;        // cadrage explicite de la figure, ou null
+                var currentMemoryFrame = null;  // cadrage qui valide la vue mémorisée
                 function frameOf(layout) {{
                     var xr = layout.xaxis && layout.xaxis.range;
                     var yr = layout.yaxis && layout.yaxis.range;
@@ -89,8 +103,19 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     return {{x: xr.slice(), y: yr.slice()}};
                 }}
                 // Plages qui reproduisent une vue mémorisée sur le graphique à sa taille ACTUELLE.
+                // Une vue {{fit: plages}} (cf. prepareLayoutChange) montre au moins ces plages :
+                // en vue orthonormée, centrée sur elles à l'échelle qui les fait tenir.
                 function viewUpdate(gd, view) {{
                     if (view.auto) return {{'xaxis.autorange': true, 'yaxis.autorange': true}};
+                    if (view.fit) {{
+                        var f = view.fit, flf = gd._fullLayout;
+                        if (flf.yaxis.scaleanchor !== 'x') return {{'xaxis.range': f.x, 'yaxis.range': f.y}};
+                        return viewUpdate(gd, {{
+                            cx: (f.x[0] + f.x[1]) / 2, cy: (f.y[0] + f.y[1]) / 2,
+                            upp: Math.max(Math.abs(f.x[1] - f.x[0]) / flf.xaxis._length,
+                                          Math.abs(f.y[1] - f.y[0]) / flf.yaxis._length)
+                        }});
+                    }}
                     if (view.upp !== undefined) {{
                         var fl = gd._fullLayout;
                         var hx = view.upp * fl.xaxis._length / 2, hy = view.upp * fl.yaxis._length / 2;
@@ -101,7 +126,7 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 function rememberView() {{
                     var graphDiv = document.getElementById('graph');
                     if (currentViewKey === null || !graphDiv._fullLayout || !graphDiv.layout) return;
-                    viewMemory[currentViewKey] = {{frame: currentFrame, view: captureView(graphDiv)}};
+                    viewMemory[currentViewKey] = {{frame: currentMemoryFrame, view: captureView(graphDiv)}};
                 }}
                 // Vue mémorisée en cours de restauration : réappliquée si le graphique change de
                 // taille juste après (le redimensionnement du panneau arrive souvent APRÈS le
@@ -117,17 +142,18 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     }}
                     var target = viewUpdate(gd, pending.view);
                     var fl = gd._fullLayout;
-                    if (target['xaxis.range'] && sameRange(fl.xaxis.range, target['xaxis.range'])
-                            && sameRange(fl.yaxis.range, target['yaxis.range'])) {{
-                        return;
+                    var done = (target['xaxis.range'] && sameRange(fl.xaxis.range, target['xaxis.range'])
+                            && sameRange(fl.yaxis.range, target['yaxis.range']))
+                        ? Promise.resolve() : Plotly.relayout(gd, target);
+                    if (pending.view.fit && layoutChange) {{
+                        done.then(function() {{ layoutChange.after = visibleRanges(gd); }});
                     }}
-                    Plotly.relayout(gd, target);
                 }}
                 function sameRange(a, b) {{
                     var span = Math.abs(b[1] - b[0]) || 1;
                     return Math.abs(a[0] - b[0]) < 1e-6 * span && Math.abs(a[1] - b[1]) < 1e-6 * span;
                 }}
-                function updateGraph(figData, viewKey) {{
+                function updateGraph(figData, viewKey, dataExtent) {{
                     try {{
                         if (typeof Plotly === 'undefined') return;
                         var graphDiv = document.getElementById('graph');
@@ -151,10 +177,12 @@ def _build_page_html(plotly_js_filename: str) -> str:
                             figData.layout.xaxis.autorange = true;
                             figData.layout.yaxis.autorange = true;
                         }}
-                        currentViewKey = (viewKey && currentFrame !== null) ? viewKey : null;
+                        currentMemoryFrame = currentFrame !== null ? currentFrame
+                            : (dataExtent ? JSON.stringify(dataExtent) : null);
+                        currentViewKey = (viewKey && currentMemoryFrame !== null) ? viewKey : null;
                         var key = currentViewKey;
                         var saved = key !== null ? viewMemory[key] : null;
-                        var restore = (saved && saved.frame === currentFrame) ? saved.view : null;
+                        var restore = (saved && saved.frame === currentMemoryFrame) ? saved.view : null;
                         // Graphique rendu visible AVANT le tracé : masqué, Plotly le tracerait à
                         // une taille par défaut puis le recadrerait au redimensionnement.
                         document.getElementById('graph').style.display = 'block';
@@ -163,6 +191,7 @@ def _build_page_html(plotly_js_filename: str) -> str:
                         var reacted = Plotly.react(graphDiv, figData.data, figData.layout, config);
                         attachPlotListeners(graphDiv);
                         if (restore) reacted.then(applyPendingRestore);
+                        reacted.then(function() {{ updateCursorReadout(); }});
                     }} catch(err) {{
                         showEmptyState("Erreur d'affichage : " + err.message);
                     }}
@@ -170,6 +199,7 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 function showEmptyState(msg) {{
                     rememberView();
                     currentViewKey = null;
+                    hideCursorReadout();
                     document.getElementById('graph').style.display = 'none';
                     document.getElementById('empty-state-text').innerHTML = msg || 'Données insuffisantes pour tracer le profil.';
                     document.getElementById('empty-state').style.display = 'flex';
@@ -279,6 +309,9 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     if (graphDiv.__hydrotopoListeners) return;
                     graphDiv.on('plotly_doubleclick', onPlotlyDoubleClick);
                     graphDiv.on('plotly_relayout', fitZoomBox);
+                    // Vue déplacée ou zoomée (molette, barre d'outils) sans bouger la souris :
+                    // les coordonnées sous le curseur ont changé.
+                    graphDiv.on('plotly_relayout', function() {{ updateCursorReadout(); }});
                     graphDiv.__hydrotopoListeners = true;
                 }}
 
@@ -304,12 +337,85 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     Plotly.relayout(gd, {{'xaxis.range': scaled(xr, cx), 'yaxis.range': scaled(yr, cy)}});
                 }}, {{passive: false}});
 
+                // --- Coordonnées du curseur ---
+                // Réticule en tirets à travers la zone de tracé et cotes X / Z du point visé,
+                // dans le coin inférieur droit : pour lire une cote n'importe où, pas seulement
+                // sur un point du profil. Masqués hors de la zone de tracé.
+                var lastMouse = null;
+                function hideCursorReadout() {{
+                    ['crosshair-v', 'crosshair-h', 'cursor-readout'].forEach(function(id) {{
+                        document.getElementById(id).style.display = 'none';
+                    }});
+                }}
+                function updateCursorReadout(evt) {{
+                    if (evt) lastMouse = {{clientX: evt.clientX, clientY: evt.clientY}};
+                    var gd = document.getElementById('graph');
+                    var at = (lastMouse && gd.style.display !== 'none') ? plotCoords(lastMouse) : null;
+                    if (!at || !at.inside) {{
+                        hideCursorReadout();
+                        return;
+                    }}
+                    var fl = gd._fullLayout;
+                    var x0 = fl.xaxis._offset, y0 = fl.yaxis._offset;
+                    var v = document.getElementById('crosshair-v');
+                    v.style.left = (x0 + at.px) + 'px';
+                    v.style.top = y0 + 'px';
+                    v.style.height = fl.yaxis._length + 'px';
+                    v.style.display = 'block';
+                    var h = document.getElementById('crosshair-h');
+                    h.style.top = (y0 + at.py) + 'px';
+                    h.style.left = x0 + 'px';
+                    h.style.width = fl.xaxis._length + 'px';
+                    h.style.display = 'block';
+                    var r = document.getElementById('cursor-readout');
+                    r.textContent = 'X = ' + at.x.toFixed(2) + ' m   ·   Z = ' + at.y.toFixed(2) + ' m NGF';
+                    r.style.display = 'block';
+                    r.style.left = (x0 + fl.xaxis._length - r.offsetWidth - 8) + 'px';
+                    r.style.top = (y0 + fl.yaxis._length - r.offsetHeight - 8) + 'px';
+                }}
+                document.addEventListener('mousemove', updateCursorReadout);
+                document.documentElement.addEventListener('mouseleave', function() {{
+                    lastMouse = null;
+                    hideCursorReadout();
+                }});
+
+                // --- Agrandir / réduire le graphique (cf. MainWindow.toggle_plot_expanded) ---
+                // Appelé par Python juste AVANT de masquer ou réafficher les panneaux voisins :
+                // la vue affichée est conservée à travers le changement de taille (appliquée
+                // au redimensionnement, comme une vue mémorisée). En vue orthonormée, la zone
+                // visible est recadrée pour tenir dans la nouvelle taille ; un aller-retour
+                // sans toucher au graphique retrouve exactement la vue de départ (sinon chaque
+                // aller-retour l'élargirait un peu plus).
+                var layoutChange = null;
+                function visibleRanges(gd) {{
+                    var fl = gd._fullLayout;
+                    return {{x: fl.xaxis.range.slice(), y: fl.yaxis.range.slice()}};
+                }}
+                function prepareLayoutChange() {{
+                    var gd = document.getElementById('graph');
+                    if (!gd._fullLayout || !gd.layout || gd.style.display === 'none') return;
+                    var visible = visibleRanges(gd);
+                    var back = layoutChange, view;
+                    if (back && back.key === currentViewKey && back.after
+                            && sameRange(visible.x, back.after.x) && sameRange(visible.y, back.after.y)) {{
+                        view = back.before;
+                        layoutChange = null;
+                    }} else {{
+                        var before = captureView(gd);
+                        view = before.auto ? before : {{fit: visible}};
+                        layoutChange = {{key: currentViewKey, before: before, after: null}};
+                    }}
+                    pendingRestore = {{key: currentViewKey, view: view, until: Date.now() + RESTORE_WINDOW_MS}};
+                }}
+
                 // --- Export PNG (bouton "Exporter l'image") ---
                 // Plotly.toImage est asynchrone et runJavaScript ne sait pas attendre une
                 // promesse : Python lance l'export puis vient chercher le résultat (data URL
                 // "data:image/png;base64,...", ou "error:<message>").
                 var exportedImage = null;
-                function startImageExport() {{
+                // Hauteur (px) du bandeau ajouté en haut de l'image pour la légende.
+                var CAPTION_HEIGHT = 30;
+                function startImageExport(caption) {{
                     exportedImage = null;
                     var gd = document.getElementById('graph');
                     if (!gd._fullLayout || gd.style.display === 'none') {{
@@ -319,7 +425,23 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     // Taille affichée explicite : sans elle, Plotly exporte en 700 x 450 px
                     // quelle que soit la taille du graphique à l'écran.
                     var size = {{width: gd._fullLayout.width, height: gd._fullLayout.height}};
-                    Plotly.toImage(gd, {{format: 'png', scale: 2, width: size.width, height: size.height}}).then(
+                    // Légende (projet › scénario › profil — vue) en titre, au-dessus du titre
+                    // du graphique. Elle occupe un bandeau AJOUTÉ en haut de l'image : la zone
+                    // de tracé garde sa taille, donc exactement le cadrage affiché.
+                    var layout = Object.assign({{}}, gd.layout);
+                    if (caption) {{
+                        var margin = Object.assign({{}}, gd.layout.margin);
+                        margin.t = (margin.t !== undefined ? margin.t : 100) + CAPTION_HEIGHT;
+                        layout.margin = margin;
+                        var title = gd.layout.title && gd.layout.title.text;
+                        layout.title = Object.assign({{}}, gd.layout.title, {{
+                            text: '<b>' + caption + '</b>'
+                                + (title ? '<br><span style="font-size:12px">' + title + '</span>' : '')
+                        }});
+                        size.height += CAPTION_HEIGHT;
+                    }}
+                    Plotly.toImage({{data: gd.data, layout: layout}},
+                                   {{format: 'png', scale: 2, width: size.width, height: size.height}}).then(
                         function(url) {{ exportedImage = url; }},
                         function(err) {{ exportedImage = 'error:' + err.message; }}
                     );
@@ -347,6 +469,9 @@ def _build_page_html(plotly_js_filename: str) -> str:
 
 
 class PlotView(QWidget):
+    # Bouton "Agrandir" / "Réduire" : MainWindow masque ou réaffiche les panneaux voisins.
+    expand_toggled = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_layout = QVBoxLayout(self)
@@ -365,18 +490,29 @@ class PlotView(QWidget):
         
         self.header_layout.addStretch() 
         
-        self.btn_export = QPushButton("📷 Exporter l'image")
-        self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_export.setStyleSheet(theme.qss("""
+        button_style = theme.qss("""
             QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
             QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
-        """))
+        """)
+        self.btn_expand = QPushButton()
+        self.btn_expand.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_expand.setStyleSheet(button_style)
+        self.btn_expand.clicked.connect(self.expand_toggled.emit)
+        self.header_layout.addWidget(self.btn_expand)
+        self.set_expanded(False)
+
+        self.btn_export = QPushButton("📷 Exporter l'image")
+        self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export.setStyleSheet(button_style)
         self.btn_export.setToolTip("Enregistre le graphique affiché (zoom compris) en image PNG.")
         self.btn_export.clicked.connect(self.export_image)
         self.header_layout.addWidget(self.btn_export)
         # Nom de fichier proposé à l'export (sans extension), mis à jour par MainWindow selon
         # ce qui est affiché.
         self.export_name = "graphique"
+        # Légende écrite en haut de l'image exportée (projet › scénario › profil — vue),
+        # mise à jour par MainWindow ; vide = pas de légende.
+        self.export_caption = ""
         self.main_layout.addLayout(self.header_layout)
         
         # --- MOTEUR WEB ---
@@ -415,9 +551,9 @@ class PlotView(QWidget):
 
     def update_plot(self, fig, error_message: str = None, view_key: str = None):
         """Affiche `fig` (ou un message si None). `view_key` identifie la vue affichée (ex.
-        "profile:12:existing") : le zoom de l'utilisateur sur cette vue est mémorisé et
-        retrouvé quand il y revient après avoir affiché autre chose. Sans clé, aucune
-        mémoire (ex. profil en long)."""
+        "profile:12:existing", "scenario:3:longitudinal") : le zoom de l'utilisateur sur
+        cette vue est mémorisé et retrouvé quand il y revient après avoir affiché autre
+        chose. Sans clé, aucune mémoire."""
         if not self._is_ready:
             self._pending_fig = fig
             self._pending_view_key = view_key
@@ -430,7 +566,30 @@ class PlotView(QWidget):
             return
 
         fig_json = fig.to_json()
-        self.browser.page().runJavaScript(f"updateGraph({fig_json}, {json.dumps(view_key)});")
+        extent = json.dumps(data_extent(fig))
+        self.browser.page().runJavaScript(f"updateGraph({fig_json}, {json.dumps(view_key)}, {extent});")
+
+    # --- Agrandir / réduire ---
+
+    def set_expanded(self, expanded: bool):
+        """Libellé du bouton selon que le graphique occupe toute la fenêtre ou non."""
+        if expanded:
+            self.btn_expand.setText("⛶ Réduire")
+            self.btn_expand.setToolTip("Revenir à l'affichage normal (Échap).")
+        else:
+            self.btn_expand.setText("⛶ Agrandir")
+            self.btn_expand.setToolTip(
+                "Afficher le graphique dans toute la fenêtre (Échap pour revenir)."
+            )
+
+    def prepare_layout_change(self, then):
+        """À appeler juste avant de changer la taille du graphique (Agrandir / Réduire) :
+        la page note la vue affichée pour la conserver, puis `then` est exécuté. Attendre la
+        page garantit qu'elle note la vue AVANT le redimensionnement."""
+        if not self._is_ready or not self._has_figure:
+            then()
+            return
+        self.browser.page().runJavaScript("prepareLayoutChange();", lambda _result: then())
 
     # --- Export PNG ---
 
@@ -453,7 +612,9 @@ class PlotView(QWidget):
 
         self._export_path = path
         self._export_polls = 0
-        self.browser.page().runJavaScript("startImageExport();")
+        # Échappement : Plotly interprète le texte de la légende comme du HTML simplifié.
+        caption = json.dumps(escape(self.export_caption or "", quote=False))
+        self.browser.page().runJavaScript(f"startImageExport({caption});")
         QTimer.singleShot(_EXPORT_POLL_MS, self._poll_export)
 
     def _poll_export(self):
@@ -485,3 +646,19 @@ def save_png_data_url(path, data_url: str) -> None:
     if not data_url.startswith(prefix):
         raise ValueError("format d'image inattendu")
     Path(path).write_bytes(base64.b64decode(data_url[len(prefix):]))
+
+
+def data_extent(fig):
+    """Étendue [[x min, x max], [z min, z max]] des données tracées par `fig`, ou None si
+    elle ne trace aucun point. Sert, pour une figure en cadrage automatique (profil en
+    long), à savoir si une vue mémorisée vaut encore : tant que l'étendue ne change pas,
+    le zoom de l'utilisateur est retrouvé ; sinon on repart du cadrage par défaut."""
+    xs, ys = [], []
+    for trace in fig.data:
+        for x, y in zip(getattr(trace, "x", None) or (), getattr(trace, "y", None) or ()):
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                xs.append(float(x))
+                ys.append(float(y))
+    if not xs:
+        return None
+    return [[min(xs), max(xs)], [min(ys), max(ys)]]

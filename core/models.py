@@ -40,11 +40,9 @@ class ProjectParameters:
     # --- Berges ---
     bank_slope_left: float = 1.8
     bank_width_left: float = 3.0
-    delete_point_left_bank: bool = False
 
     bank_slope_right: float = 2.5
     bank_width_right: float = 3.0
-    delete_point_right_bank: bool = False
 
     # --- Lit majeur (segment optionnel après la berge ; largeur = 0 -> désactivé,
     # comportement inchangé) ---
@@ -53,23 +51,10 @@ class ProjectParameters:
     floodplain_slope_left: float = 0.0
     floodplain_slope_right: float = 0.0
 
-    x_end_profile_left: float = 0.1
-    x_end_profile_right: float = 11.0
-
-    # --- Interruption du calcul de terrassements ---
-    x_end_equals_profile_width: bool = False
-    x_end_rd: float = 11.0
-
-    # --- Granulométrie ---
-    d50: float = 0.004
-
     # --- Ancrage sur le terrain ---
     anchor_x: float = 3.78
     anchor_z: float = 47.40
 
-    # --- Position du lit ---
-    keep_existing_slope: bool = False
-    
     # --- Géométrie (Nouveau) ---
     slope: float = 0.005
     # Pente calculée à partir des points durs du projet ("computed"), ou saisie à la main
@@ -96,7 +81,8 @@ class ProjectParameters:
 
     # --- Raccords latéraux optionnels vers le profil existant ---
     # Choisis manuellement (valeur figée à la sélection) : prolongent la géométrie
-    # au-delà du haut de berge actuel. None de chaque côté = comportement inchangé.
+    # au-delà du bout du lit majeur (ou, à défaut, du haut de berge). None de chaque côté
+    # = comportement inchangé.
     connect_x_left: Optional[float] = None
     connect_z_left: Optional[float] = None
     connect_x_right: Optional[float] = None

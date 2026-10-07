@@ -1,6 +1,7 @@
 # core/controller.py
 from __future__ import annotations
 import math
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
@@ -11,7 +12,9 @@ from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import (clip_to_bounds, compute_hydraulic_params, free_end_levels,
                              overflow_level, resolve_hydraulic_result)
-from core.longitudinal import build_longitudinal_profile
+from core.hard_points import HardPoint, complete_points
+from core.longitudinal import StationEarthworks, build_longitudinal_profile
+from core.project_summary import ProjectSummary, ScenarioSummary, earthwork_volumes
 from viz.plots import EXISTING_COLOR, PROJECT_COLOR, plot_overlay, plot_single_profile, plot_longitudinal_profile
 from ui import theme
 
@@ -54,6 +57,21 @@ def flow_zone_bounds(hydro_data: Dict[str, Any]) -> Tuple[str, Optional[Tuple[fl
     return ALL_ZONE, None
 
 
+@dataclass
+class _HydraulicsSolution:
+    """Calcul hydraulique d'un profil, tel que l'affiche l'onglet Hydraulique."""
+    section: CrossSection
+    hydro_source: str
+    zone: str
+    bounds: Any
+    z_ref: float
+    calc_mode: str
+    slope: float
+    ks: float
+    q_target: float
+    res: Dict[str, Any]
+
+
 class ViewMode(Enum):
     EXISTING = "existing"
     PROJECT = "project"
@@ -83,15 +101,51 @@ class ProfileController:
     def build_longitudinal_figure(
         self, rows: List[Tuple[float, Optional[float], Optional[float]]],
         hard_points: Optional[List[Dict[str, Any]]] = None,
+        earthworks: Optional[List[StationEarthworks]] = None,
     ) -> Optional[go.Figure]:
         """Construit le profil en long d'un scénario à partir des triplets
         (distance, min_z_existant, anchor_z_projet) renvoyés par
-        DatabaseManager.get_longitudinal_data, et des points durs du projet (format
-        DatabaseManager.get_hard_points)."""
+        DatabaseManager.get_longitudinal_data, des points durs du projet (format
+        DatabaseManager.get_hard_points) et des déblais / remblais de chaque profil (cf.
+        station_earthworks)."""
         profile = build_longitudinal_profile(rows, hard_points)
         if not profile.pk_existing and not profile.pk_project and not profile.hard_points:
             return None
+        profile.earthworks = list(earthworks or [])
         return plot_longitudinal_profile(profile)
+
+    def station_earthworks(self, states: List[Dict[str, Any]]) -> List[StationEarthworks]:
+        """Déblai / remblai de chaque profil d'un scénario (états au format
+        DatabaseManager.get_scenario_profile_states), calculés exactement comme dans
+        l'onglet Profil projet : existant vs projet, sur leur emprise commune. Un profil
+        sans terrain existant (moins de 2 points) ou sans profil projet enregistré (pas de
+        cote d'ancrage, comme pour la série "Projet" du profil en long) n'est pas calculé :
+        sa raison est notée, pour l'afficher au survol."""
+        result = []
+        for state in states:
+            distance = state["distance"]
+            station = StationEarthworks(distance=distance, name=state["name"] or f"{distance:g} m")
+            result.append(station)
+
+            existing = self._to_cross_section(state["existing_data"], name="Existant")
+            saved_params = state["project_params"] or {}
+            if existing is None:
+                station.note = "profil existant incomplet"
+                continue
+            if saved_params.get("anchor_z") is None:
+                station.note = "profil projet non renseigné"
+                continue
+            try:
+                params = self._to_project_parameters({**self.default_project_params(), **saved_params})
+                works = compute_earthworks(existing, build_project_cross_section(params, name="Projet"))
+            except ValueError as e:
+                station.note = f"profil projet invalide ({e})"
+                continue
+            if works.extent is None:
+                station.note = "pas d'emprise commune entre existant et projet"
+                continue
+            station.cut, station.fill = works.cut_total, works.fill_total
+        return result
 
     def _build_existing_figure(self, existing_data: List[Dict[str, Any]]) -> Optional[go.Figure]:
         section = self._to_cross_section(existing_data, name="Existant")
@@ -127,52 +181,17 @@ class ProfileController:
         hydro_data: Dict[str, Any],
         show_overlay: bool,
     ) -> Optional[go.Figure]:
-        hydro_source = hydro_data.get('hydro_source', 'project')
-        zone, bounds = flow_zone_bounds(hydro_data)
+        solved = self._solve_hydraulics(existing_data, project_data, hydro_data)
+        if solved is None:
+            return None
+        section, hydro_source, zone, bounds = solved.section, solved.hydro_source, solved.zone, solved.bounds
+        z_ref, res = solved.z_ref, solved.res
+        calc_mode, slope, ks, q_target = solved.calc_mode, solved.slope, solved.ks, solved.q_target
+        color = EXISTING_COLOR if hydro_source == 'existing' else PROJECT_COLOR
 
-        if hydro_source == 'existing':
-            section = self._to_cross_section(existing_data, name="Existant")
-            if section is None:
-                return None
-        else:
-            params = self._to_project_parameters(project_data)
-            section = build_project_cross_section(params, name="Projet")
-
-        if zone in (LEFT_ARM, RIGHT_ARM):
-            split = bounds[1] if zone == LEFT_ARM else bounds[0]
-            first, last = section.points[0].x, section.points[-1].x
-            if not first < split < last:
-                raise ValueError(
-                    f"Séparation des bras : X = {split:.2f} m est en dehors du profil calculé "
-                    f"(X = {first:.2f} → {last:.2f} m)."
-                )
-
-        # Tirant d'eau mesuré depuis le fond de la zone d'écoulement (le bras choisi), pas
-        # depuis le point le plus bas de tout le profil, qui peut se trouver dans l'autre bras.
-        zone_points, _, _ = clip_to_bounds(section.points, bounds)
-        if hydro_source == 'existing':
-            z_ref = min(pt.z for pt in (zone_points or section.points))
-            color = EXISTING_COLOR
-        else:
-            # Profil projet : depuis le fond du lit (cote d'ancrage) tant que ce fond est dans
-            # la zone d'écoulement, sinon depuis le point le plus bas de la zone.
-            bed_in_zone = bounds is None or (
-                params.anchor_x < bounds[1] and params.anchor_x + params.bed_width > bounds[0]
-            )
-            z_ref = params.anchor_z if bed_in_zone or not zone_points else min(pt.z for pt in zone_points)
-            color = PROJECT_COLOR
-
-        # --- Moteur Hydraulique --- (fonction pure, cf. core.hydraulics.resolve_hydraulic_result :
-        # aucune valeur ne peut "fuiter" d'un appel précédent, tout est recalculé depuis
-        # hydro_data/section actuels à chaque appel de _build_hydraulics_figure)
-        calc_mode = hydro_data.get('calc_mode', 'Q_FROM_H')
-        slope = hydro_data.get('slope', 0.005)
-        ks = hydro_data.get('ks_pro', 25.0)
-        q_target = hydro_data.get('q_target', 15.0)
-        h_eau = hydro_data.get('h_eau', 0.5)
-
-        res = resolve_hydraulic_result(section, calc_mode, q_target, h_eau, z_ref, slope, ks, bounds)
-        water = dict(water_level=res["water_z"], water_intervals=res["wet_intervals"], calc_bounds=bounds)
+        # Ligne d'eau tracée sur tous les lits en eau, y compris ceux qui débordent (étendus
+        # jusqu'au bord du profil) : elle reste visible en cas de débordement.
+        water = dict(water_level=res["water_z"], water_intervals=res["water_intervals"], calc_bounds=bounds)
 
         # --- Génération de la figure ---
         if show_overlay:
@@ -190,9 +209,13 @@ class ProfileController:
             fig = plot_single_profile(section, color=color, **water)
 
         # --- Incrustation des résultats ---
-        if res["S"] > 0:
+        is_h_calculated = calc_mode == 'H_FROM_Q'
+        # "Imposer H" au-dessus d'une extrémité libre du profil : l'eau déborderait hors du
+        # profil levé (non modélisé), le débit n'est pas calculable. Les résultats restent
+        # affichés, comme d'habitude, avec le tirant d'eau saisi.
+        overflowing = not is_h_calculated and bool(res["overflow_sides"])
+        if res["S"] > 0 or (overflowing and res["water_intervals"]):
             h_relative = res["water_z"] - z_ref
-            is_h_calculated = calc_mode == 'H_FROM_Q'
 
             def highlighted_line(label: str, value_str: str) -> str:
                 # La grandeur calculée : toute la ligne en gras et en couleur d'accent,
@@ -203,19 +226,33 @@ class ProfileController:
                 line = f"<b>{label} :</b> {value_str}"
                 return f"{line} <i>[{tag}]</i>" if tag else line
 
-            q_line = (
-                discreet_line("Débit (Q)", f"{res['Q']:.2f} m³/s", "Saisi")
-                if is_h_calculated
-                else highlighted_line("Débit (Q)", f"{res['Q']:.2f} m³/s")
-            )
+            def not_computable_line(label: str, value_str: str) -> str:
+                return f'<span style="color:{OVERFLOW_WARNING_COLOR}"><b>{label} : {value_str}</b></span>'
+
+            if overflowing:
+                q_line = not_computable_line("Débit (Q)", "non calculable (débordement)")
+            elif not is_h_calculated:
+                q_line = highlighted_line("Débit (Q)", f"{res['Q']:.2f} m³/s")
+            elif abs(res["Q"] - q_target) < 0.01:
+                q_line = discreet_line("Débit (Q)", f"{res['Q']:.2f} m³/s", "Saisi")
+            else:
+                # Débit cible trop fort : l'eau est laissée au niveau maximal sans
+                # débordement, Q est la capacité correspondante (cf. avertissement).
+                q_line = not_computable_line(
+                    "Débit (Q)", f"{res['Q']:.2f} m³/s (cible {q_target:.2f} m³/s non atteinte)"
+                )
             h_line = (
                 highlighted_line("Tirant d'eau (h)", f"{h_relative:.2f} m")
                 if is_h_calculated
                 else discreet_line("Tirant d'eau (h)", f"{h_relative:.2f} m", "Saisi")
             )
 
-            v_line = discreet_line("Vitesse moyenne (V)", f"{res['V']:.2f} m/s")
-            s_line = discreet_line("Surface mouillée (S)", f"{res['S']:.2f} m²")
+            if overflowing:
+                v_line = discreet_line("Vitesse moyenne (V)", "non calculable")
+                s_line = discreet_line("Surface mouillée (S)", "non calculable")
+            else:
+                v_line = discreet_line("Vitesse moyenne (V)", f"{res['V']:.2f} m/s")
+                s_line = discreet_line("Surface mouillée (S)", f"{res['S']:.2f} m²")
 
             texte_resultats = (
                 f'<span style="color:{theme.TEXT_PRIMARY}"><b>Résultats hydrauliques</b></span><br><br>'
@@ -233,7 +270,7 @@ class ProfileController:
 
             # Plusieurs zones en eau (typiquement les deux bras) : répartition du débit,
             # chacune avec son propre rayon hydraulique (cf. compute_hydraulic_params).
-            if len(res["wet_intervals"]) > 1:
+            if len(res["wet_intervals"]) > 1 and not overflowing:
                 texte_resultats += "<br><b>Répartition du débit :</b>"
                 for (x0, x1), q in zip(res["wet_intervals"], res["bed_discharges"]):
                     share = 100 * q / res["Q"] if res["Q"] else 0
@@ -259,6 +296,127 @@ class ProfileController:
 
         return fig
 
+    def _solve_hydraulics(
+        self,
+        existing_data: List[Dict[str, Any]],
+        project_data: Dict[str, Any],
+        hydro_data: Dict[str, Any],
+    ) -> Optional[_HydraulicsSolution]:
+        """Calcul hydraulique d'un profil (section choisie, zone d'écoulement, cote de
+        référence du tirant d'eau, résultat), commun au graphique de l'onglet Hydraulique et
+        au récapitulatif du projet. None si la section source n'a pas assez de points ;
+        ValueError si la séparation des bras tombe hors du profil."""
+        hydro_source = hydro_data.get('hydro_source', 'project')
+        zone, bounds = flow_zone_bounds(hydro_data)
+
+        if hydro_source == 'existing':
+            section = self._to_cross_section(existing_data, name="Existant")
+            if section is None:
+                return None
+        else:
+            params = self._to_project_parameters(project_data)
+            section = build_project_cross_section(params, name="Projet")
+
+        if zone in (LEFT_ARM, RIGHT_ARM):
+            split = bounds[1] if zone == LEFT_ARM else bounds[0]
+            first, last = section.points[0].x, section.points[-1].x
+            if not first < split < last:
+                raise ValueError(
+                    f"Séparation des bras : X = {split:.2f} m est en dehors du profil calculé "
+                    f"(X = {first:.2f} → {last:.2f} m)."
+                )
+
+        # Tirant d'eau mesuré depuis le fond de la zone d'écoulement (le bras choisi), pas
+        # depuis le point le plus bas de tout le profil, qui peut se trouver dans l'autre bras.
+        zone_points, _, _ = clip_to_bounds(section.points, bounds)
+        if hydro_source == 'existing':
+            z_ref = min(pt.z for pt in (zone_points or section.points))
+        else:
+            # Profil projet : depuis le fond du lit (cote d'ancrage) tant que ce fond est dans
+            # la zone d'écoulement, sinon depuis le point le plus bas de la zone.
+            bed_in_zone = bounds is None or (
+                params.anchor_x < bounds[1] and params.anchor_x + params.bed_width > bounds[0]
+            )
+            z_ref = params.anchor_z if bed_in_zone or not zone_points else min(pt.z for pt in zone_points)
+
+        # --- Moteur Hydraulique --- (fonction pure, cf. core.hydraulics.resolve_hydraulic_result :
+        # aucune valeur ne peut "fuiter" d'un appel précédent, tout est recalculé depuis
+        # hydro_data/section actuels à chaque appel)
+        calc_mode = hydro_data.get('calc_mode', 'Q_FROM_H')
+        slope = hydro_data.get('slope', 0.005)
+        ks = hydro_data.get('ks_pro', 25.0)
+        q_target = hydro_data.get('q_target', 15.0)
+        h_eau = hydro_data.get('h_eau', 0.5)
+
+        res = resolve_hydraulic_result(section, calc_mode, q_target, h_eau, z_ref, slope, ks, bounds)
+        return _HydraulicsSolution(
+            section=section, hydro_source=hydro_source, zone=zone, bounds=bounds, z_ref=z_ref,
+            calc_mode=calc_mode, slope=slope, ks=ks, q_target=q_target, res=res,
+        )
+
+    def profile_overflows(self, existing_data: List[Dict[str, Any]],
+                          project_params: Dict[str, Any]) -> Optional[bool]:
+        """Le réglage hydraulique enregistré d'un profil fait-il déborder l'eau hors du
+        profil (avertissement de l'onglet Hydraulique) ? None si ce n'est pas calculable :
+        aucun réglage enregistré, profil source non renseigné ou zone incohérente."""
+        saved = project_params or {}
+        if 'calc_mode' not in saved:
+            return None
+        if saved.get('hydro_source', 'project') != 'existing' and saved.get('anchor_z') is None:
+            return None
+        data = {**self.default_project_params(), **saved}
+        try:
+            solved = self._solve_hydraulics(existing_data, data, data)
+        except ValueError:
+            return None
+        if solved is None:
+            return None
+        warning = self._overflow_warning(solved.section, solved.bounds, solved.res, solved.calc_mode,
+                                         solved.q_target, solved.slope, solved.ks)
+        return warning is not None
+
+    def scenario_summary(self, scenario_id: int, name: str,
+                         states: List[Dict[str, Any]]) -> ScenarioSummary:
+        """Chiffres clés d'un scénario (cf. core.project_summary), à partir de l'état de
+        ses profils (format DatabaseManager.get_scenario_profile_states)."""
+        summary = ScenarioSummary(scenario_id=scenario_id, name=name, n_profiles=len(states))
+        if states:
+            distances = [state["distance"] for state in states]
+            summary.distance_range = (min(distances), max(distances))
+
+        summary.n_complete = sum(
+            1 for state in states
+            if self._to_cross_section(state["existing_data"], name="Existant") is not None
+            and (state["project_params"] or {}).get("anchor_z") is not None
+        )
+
+        stations = self.station_earthworks(states)
+        computed = [s for s in stations if s.computed]
+        summary.n_earthworks = len(computed)
+        summary.cut_area = sum(s.cut for s in computed)
+        summary.fill_area = sum(s.fill for s in computed)
+        summary.cut_volume, summary.fill_volume = earthwork_volumes(stations)
+
+        for state, station in zip(states, stations):
+            overflows = self.profile_overflows(state["existing_data"], state["project_params"])
+            if overflows is None:
+                continue
+            summary.n_hydraulics += 1
+            if overflows:
+                summary.overflow_names.append(station.name)
+        return summary
+
+    def project_summary(self, name: str, hard_points: List[Dict[str, Any]],
+                        scenarios: List[Tuple[int, str, List[Dict[str, Any]]]]) -> ProjectSummary:
+        """Récapitulatif d'un projet : ses points durs et tronçons, et une ligne par
+        scénario ((id, nom, états de ses profils), dans l'ordre d'affichage)."""
+        return ProjectSummary(
+            name=name,
+            scenarios=[self.scenario_summary(sid, sname, states) for sid, sname, states in scenarios],
+            hard_points=complete_points(HardPoint.from_dict(p) for p in hard_points or []),
+            segments=build_longitudinal_profile([], hard_points).segments,
+        )
+
     @staticmethod
     def _overflow_warning(section, bounds, res: Dict[str, Any], calc_mode: str,
                           q_target: float, slope: float, ks: float) -> Optional[str]:
@@ -280,7 +438,8 @@ class ProfileController:
             if res["water_z"] is not None and abs(res["Q"] - q_target) < 0.01:
                 return None
             reason = (
-                "l'eau déborderait hors du profil (débordement non modélisé)."
+                "au-delà, l'eau déborderait hors du profil (débordement non modélisé) : la cote "
+                "d'eau est laissée à ce niveau maximal."
                 if level is not None else
                 "la cote d'eau est plafonnée au sommet du profil calculé."
             )
@@ -298,8 +457,8 @@ class ProfileController:
         return (
             f"<b>⚠ Débordement</b> : la cote d'eau (Z = {res['water_z']:.2f} m NGF) dépasse "
             f"l'extrémité {details} du profil.<br>"
-            "L'eau déborderait hors du profil levé : non modélisé, le lit concerné est exclu "
-            f"du calcul.{capacity}"
+            "L'eau déborderait hors du profil levé (débordement non modélisé) : débit non "
+            f"calculable.{capacity}"
         )
 
     def _to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:

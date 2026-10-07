@@ -5,6 +5,7 @@ from html import escape
 from PyQt6.QtWidgets import (QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabWidget, QStackedWidget,
                              QLabel, QFileDialog, QMessageBox)
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 from core.excel_export import export_project_profile
 from database.db_manager import DatabaseManager
@@ -13,6 +14,7 @@ from ui.forms.existing_form import ExistingProfileForm
 from ui.forms.project_form import ProjectProfileForm
 from ui.forms.hydraulics_form import HydraulicsForm
 from ui.views.plot_view import PlotView
+from ui.views.project_summary_view import ProjectSummaryView
 from ui import theme
 
 from core.controller import ProfileController, ViewMode
@@ -25,11 +27,6 @@ class MainWindow(QMainWindow):
         "Aucun profil sélectionné",
         "Choisissez un scénario pour son profil en long,\n"
         "ou un profil pour éditer son profil en travers.",
-    )
-    WELCOME_PROJECT = (
-        "Aucun profil sélectionné",
-        "Choisissez un scénario de ce projet pour son profil en long,\n"
-        "ou l'un de ses profils pour éditer son profil en travers.",
     )
     WELCOME_DRAFT_ZONE = (
         "Zone Draft",
@@ -56,9 +53,16 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(self.db_manager)
         main_splitter.addWidget(self.sidebar)
         
-        # 2. Zone de travail (Le splitter est affiché dès le départ)
+        # 2. Zone de travail (Le splitter est affiché dès le départ). Elle alterne avec le
+        # récapitulatif du projet, affiché à sa place quand on clique sur un projet.
+        self.work_stack = QStackedWidget()
+        main_splitter.addWidget(self.work_stack)
         work_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.addWidget(work_splitter)
+        self.work_stack.addWidget(work_splitter)
+        self.summary_view = ProjectSummaryView()
+        self.work_stack.addWidget(self.summary_view)
+        # Projet dont le récapitulatif est affiché, ou None.
+        self._summary_project_id = None
         
         # 2a. Panneau des formulaires (Caché au démarrage via StackedWidget)
         self.forms_stack = QStackedWidget()
@@ -136,7 +140,19 @@ class MainWindow(QMainWindow):
         self.plot_view.setMinimumWidth(500)
         work_splitter.addWidget(self.plot_view)
 
+        self._main_splitter = main_splitter
         self._work_splitter = work_splitter
+
+        # Graphique agrandi (bouton "Agrandir") : barre latérale et formulaires masqués.
+        # On retient ce qui était affiché pour le rétablir tel quel (au profil en long, les
+        # formulaires sont déjà masqués et doivent le rester). Échap ramène à l'affichage
+        # normal ; le raccourci n'est actif que pendant l'agrandissement, pour ne rien
+        # intercepter le reste du temps.
+        self._plot_expanded = False
+        self._layout_before_expand = None
+        self._exit_expanded_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._exit_expanded_shortcut.setEnabled(False)
+        self._exit_expanded_shortcut.activated.connect(self.toggle_plot_expanded)
 
         # On impose la répartition de l'espace au démarrage : le panneau de formulaires
         # est élargi pour que ses deux colonnes Gauche/Droite tiennent entièrement, au
@@ -165,7 +181,9 @@ class MainWindow(QMainWindow):
         self.sidebar.profile_selected.connect(self.load_profile)
         self.sidebar.draft_selected.connect(self.load_draft)
         self.sidebar.scenario_selected.connect(self.load_scenario_longitudinal)
-        self.sidebar.project_selected.connect(lambda _id: self.show_placeholder(*self.WELCOME_PROJECT))
+        self.sidebar.project_selected.connect(self.show_project_summary)
+        self.summary_view.scenario_activated.connect(self.sidebar.select_scenario)
+        self.sidebar.tree_refreshed.connect(self._refresh_project_summary)
         self.sidebar.draft_zone_selected.connect(lambda: self.show_placeholder(*self.WELCOME_DRAFT_ZONE))
         self.sidebar.selection_cleared.connect(lambda: self.show_placeholder(*self.WELCOME_DEFAULT))
         self.sidebar.project_data_changed.connect(self._on_project_data_changed)
@@ -177,6 +195,34 @@ class MainWindow(QMainWindow):
         self.form_hydraulics.data_changed.connect(self.save_and_update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.form_project.export_excel_requested.connect(self.export_project_excel)
+        self.plot_view.expand_toggled.connect(self.toggle_plot_expanded)
+
+    def toggle_plot_expanded(self):
+        """Bouton "Agrandir" / "Réduire" (ou Échap) : le graphique occupe toute la fenêtre,
+        ou retrouve sa place. Le graphique note d'abord la vue affichée, pour garder le
+        zoom en cours malgré le changement de taille (cf. PlotView.prepare_layout_change)."""
+        expand = not self._plot_expanded
+        self.plot_view.prepare_layout_change(lambda: self._set_plot_expanded(expand))
+
+    def _set_plot_expanded(self, expanded: bool):
+        if expanded == self._plot_expanded:
+            return
+        if expanded:
+            self._layout_before_expand = (
+                not self.sidebar.isHidden(), not self.forms_stack.isHidden(),
+                self._main_splitter.sizes(), self._work_splitter.sizes(),
+            )
+            self.sidebar.hide()
+            self.forms_stack.hide()
+        else:
+            sidebar_shown, forms_shown, main_sizes, work_sizes = self._layout_before_expand
+            self.sidebar.setVisible(sidebar_shown)
+            self.forms_stack.setVisible(forms_shown)
+            self._main_splitter.setSizes(main_sizes)
+            self._work_splitter.setSizes(work_sizes)
+        self._plot_expanded = expanded
+        self.plot_view.set_expanded(expanded)
+        self._exit_expanded_shortcut.setEnabled(expanded)
 
     def export_project_excel(self):
         """Exporte le profil projet ouvert (points + paramètres) dans un classeur Excel
@@ -201,11 +247,44 @@ class MainWindow(QMainWindow):
                 f"Impossible d'écrire le fichier (est-il ouvert dans Excel ?)\n\n{e}",
             )
 
-    def _on_project_data_changed(self, _project_id: int):
+    def _on_project_data_changed(self, project_id: int):
         """Points durs ou distance modifiés : la pente calculée (et la distance) du profil
-        ouvert a pu changer en base ; on le recharge pour l'afficher à jour."""
+        ouvert a pu changer en base ; on le recharge pour l'afficher à jour. Idem pour le
+        récapitulatif du projet s'il est affiché."""
         if self._current_target is not None and self._current_target[0] == "profile":
             self._open_editor(self._current_target)
+        elif self._summary_project_id == project_id:
+            self.show_project_summary(project_id)
+
+    def show_project_summary(self, project_id: int):
+        """Clic sur un projet : récapitulatif de ses scénarios à la place des formulaires et
+        du graphique (cf. ProjectSummaryView), recalculé à chaque affichage depuis les
+        profils enregistrés."""
+        self._current_target = None
+        self._update_context_bar(None)
+        labels = self.sidebar.selection_labels()
+        name = labels[0] if labels else ""
+        scenarios = [
+            (s["id"], s["name"], self.db_manager.get_scenario_profile_states(s["id"]))
+            for s in self.db_manager.get_scenarios(project_id)
+        ]
+        summary = self.controller.project_summary(
+            name, self.db_manager.get_hard_points(project_id), scenarios
+        )
+        self.summary_view.set_summary(summary)
+        self._summary_project_id = project_id
+        self.work_stack.setCurrentWidget(self.summary_view)
+
+    def _refresh_project_summary(self):
+        """Scénario créé, renommé ou supprimé (ou projet renommé) pendant que le
+        récapitulatif est affiché : il est recalculé."""
+        if self._summary_project_id is not None:
+            self.show_project_summary(self._summary_project_id)
+
+    def _show_work_area(self):
+        """Formulaires et graphique à la place du récapitulatif de projet."""
+        self._summary_project_id = None
+        self.work_stack.setCurrentWidget(self._work_splitter)
 
     def show_startup_messages(self):
         """Bilan de la migration vers les points durs multiples, affiché une seule fois
@@ -241,6 +320,7 @@ class MainWindow(QMainWindow):
         """Rien à éditer ni à tracer (projet ou zone Draft sélectionnés, ou élément ouvert
         supprimé) : page d'accueil à la place des formulaires, graphique vidé."""
         self._current_target = None
+        self._show_work_area()
         self._update_context_bar(None)
         self._set_welcome_text(title, hint)
         self.forms_stack.show()
@@ -272,6 +352,7 @@ class MainWindow(QMainWindow):
 
     def _open_editor(self, target):
         self._current_target = target
+        self._show_work_area()
 
         # Dès qu'on clique sur un profil, on révèle les formulaires à côté du graphique
         self.forms_stack.show()
@@ -306,16 +387,25 @@ class MainWindow(QMainWindow):
         formulaires est entièrement masqué : le graphique occupe alors toute la largeur
         disponible et il n'y a plus de poignée de scission à faire glisser pour le cacher."""
         self._current_target = None
+        self._show_work_area()
         self.forms_stack.hide()
         self._update_context_bar(None)
         self.plot_view.lbl_title.setText("Profil en long du scénario")
-        self.plot_view.export_name = "Profil en long"
+        labels = self.sidebar.selection_labels()
+        self.plot_view.export_name = f"{labels[-1]} - Profil en long" if labels else "Profil en long"
+        self.plot_view.export_caption = (
+            " › ".join(labels) + " — Profil en long" if labels else "Profil en long"
+        )
 
         rows = self.db_manager.get_longitudinal_data(scenario_id)
         project_id = self.db_manager.get_scenario_project_id(scenario_id)
         hard_points = self.db_manager.get_hard_points(project_id) if project_id is not None else []
-        fig = self.controller.build_longitudinal_figure(rows, hard_points)
-        self.plot_view.update_plot(fig)
+        earthworks = self.controller.station_earthworks(
+            self.db_manager.get_scenario_profile_states(scenario_id)
+        )
+        fig = self.controller.build_longitudinal_figure(rows, hard_points, earthworks)
+        # Un zoom mémorisé par scénario, retrouvé au retour (cf. update_plot).
+        self.plot_view.update_plot(fig, view_key=f"scenario:{scenario_id}:longitudinal")
 
     def save_and_update_plot(self, _=None):
         if self._current_target is None: return
@@ -358,4 +448,7 @@ class MainWindow(QMainWindow):
         context = self.sidebar.current_context()
         tab_label = self.tabs.tabText(self.tabs.currentIndex())
         self.plot_view.export_name = f"{context[-1]} - {tab_label}" if context else tab_label
+        self.plot_view.export_caption = (
+            " › ".join(context) + f" — {tab_label}" if context else tab_label
+        )
         self.plot_view.update_plot(fig, view_key=f"{kind}:{row_id}:{mode.value}")

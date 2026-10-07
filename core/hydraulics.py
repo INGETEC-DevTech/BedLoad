@@ -16,10 +16,11 @@ Bounds = Optional[Tuple[float, float]]
 _Z_TOLERANCE = 1e-9
 
 
-def _empty_result(water_z: Optional[float], overflow_sides: Optional[List[str]] = None) -> dict:
+def _empty_result(water_z: Optional[float], overflow_sides: Optional[List[str]] = None,
+                  water_intervals: Optional[List[Tuple[float, float]]] = None) -> dict:
     return {"S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0, "water_z": water_z,
             "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
-            "overflow_sides": overflow_sides or []}
+            "overflow_sides": overflow_sides or [], "water_intervals": water_intervals or []}
 
 
 def free_end_levels(section: CrossSection, bounds: Bounds = None) -> Dict[str, float]:
@@ -94,7 +95,8 @@ def clip_to_bounds(points: List[Point], bounds: Bounds) -> Tuple[List[Point], bo
     return clipped, wall_left, wall_right
 
 
-def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None) -> List[List[Point]]:
+def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None,
+                 keep_overflowing: bool = False) -> List[List[Point]]:
     """Découpe la section mouillée en lits séparés : chaque lit est la portion de terrain
     (polyligne) située sous la cote d'eau entre deux points où le terrain la coupe. Un
     terrain qui émerge entre deux creux (ex. un merlon entre deux lits) sépare donc deux
@@ -105,7 +107,8 @@ def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None) -
       mouillé et ne prolonge pas le lit.
     - Un lit qui touche une extrémité naturelle du profil sans que le terrain ne remonte
       jusqu'à la cote d'eau déborde hors du profil levé : il est ignoré, comme avant
-      (le débordement n'est pas modélisé).
+      (le débordement n'est pas modélisé), sauf avec `keep_overflowing` (affichage de la
+      ligne d'eau, qui s'étend alors jusqu'à l'extrémité du profil).
     - Un lit qui s'arrête sur une limite du lit de calcul (`bounds`) est fermé par la
       paroi fictive de cette limite."""
     points, wall_left, wall_right = clip_to_bounds(section.points, bounds)
@@ -138,6 +141,8 @@ def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None) -
     # (sinon un point de coupure aurait été inséré) : fermé par une paroi, ou débordant.
     # Une extrémité à la cote d'eau, aux arrondis près (ex. 99.4 + 3.4 = 102.80000000000001),
     # ferme le lit : sinon une eau "exactement à ras" serait comptée comme débordante.
+    if keep_overflowing:
+        return beds
     return [
         bed for bed in beds
         if (bed[0].z >= water_z - _Z_TOLERANCE or wall_left)
@@ -158,11 +163,15 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     `bed_discharges` le débit de chacun (même ordre) ; x_left et x_right en sont les bornes
     extrêmes. `overflow_sides` liste les extrémités libres ("left", "right") que la cote
     d'eau dépasse : l'eau y déborderait hors du profil, le lit concerné est ignoré (pas de
-    modélisation du débordement) et l'appelant doit le signaler."""
+    modélisation du débordement) et l'appelant doit le signaler. `water_intervals` liste,
+    pour l'affichage de la ligne d'eau, tous les lits en eau, y compris ceux qui débordent
+    (étendus jusqu'à l'extrémité du profil) : la ligne reste visible en cas de débordement."""
     overflow_sides = [side for side, z in free_end_levels(section, bounds).items()
                       if water_z > z + _Z_TOLERANCE]
+    water_intervals = [(bed[0].x, bed[-1].x)
+                       for bed in get_wet_beds(section, water_z, bounds, keep_overflowing=True)]
     if slope <= 0 or ks <= 0:
-        return _empty_result(water_z, overflow_sides)
+        return _empty_result(water_z, overflow_sides, water_intervals)
 
     beds = get_wet_beds(section, water_z, bounds)
 
@@ -182,7 +191,7 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     q_total = sum(bed_discharges)
 
     if s_total <= 0 or p_total <= 0:
-        return _empty_result(water_z, overflow_sides)
+        return _empty_result(water_z, overflow_sides, water_intervals)
 
     return {
         "S": s_total, "P": p_total, "Rh": s_total / p_total, "V": q_total / s_total, "Q": q_total,
@@ -190,18 +199,26 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
         "wet_intervals": [(bed[0].x, bed[-1].x) for bed in beds],
         "bed_discharges": bed_discharges,
         "overflow_sides": overflow_sides,
+        "water_intervals": water_intervals,
     }
 
 
 def find_water_level_for_discharge(section: CrossSection, target_q: float, slope: float, ks: float,
                                    bounds: Bounds = None) -> dict:
     """Trouve la cote d'eau correspondant au débit cible (par dichotomie), entre le point
-    le plus bas et le point le plus haut du terrain compris dans les limites `bounds`."""
+    le plus bas du terrain compris dans les limites `bounds` et la cote la plus haute
+    atteignable sans débordement (cf. overflow_level ; le point le plus haut si les deux
+    côtés sont fermés par une paroi). Au-delà, le lit qui déborde serait ignoré et le débit
+    retomberait : un débit cible trop fort laisse donc l'eau à ce niveau maximal, avec la
+    capacité correspondante (débit cible non atteint, signalé par l'appelant)."""
     points, _, _ = clip_to_bounds(section.points, bounds)
     if not points:
         return _empty_result(None)
     z_min = min(p.z for p in points)
     z_max = max(p.z for p in points)
+    level = overflow_level(section, bounds)
+    if level is not None:
+        z_max = min(z_max, level)
 
     low, high = z_min, z_max
 
@@ -216,7 +233,7 @@ def find_water_level_for_discharge(section: CrossSection, target_q: float, slope
         else:
             high = mid
 
-    # Si la crue est immense, elle s'arrête au sommet des berges géométriques
+    # Si la crue est immense, elle s'arrête au niveau maximal sans débordement
     return compute_hydraulic_params(section, high, slope, ks, bounds)
 
 

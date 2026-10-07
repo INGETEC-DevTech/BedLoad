@@ -32,6 +32,23 @@ class SegmentMarker:
 
 
 @dataclass
+class StationEarthworks:
+    """Déblai et remblai (surfaces en coupe, m²) d'un profil en travers, tels que les
+    calcule l'onglet Profil projet (existant vs projet), pour les afficher sur le profil en
+    long. `cut` et `fill` valent None si le calcul est impossible ; `note` dit alors
+    pourquoi (ex. profil projet non renseigné)."""
+    distance: float
+    name: str
+    cut: Optional[float] = None
+    fill: Optional[float] = None
+    note: str = ""
+
+    @property
+    def computed(self) -> bool:
+        return self.cut is not None and self.fill is not None
+
+
+@dataclass
 class LongitudinalProfile:
     """Deux séries (distance au premier point dur, Z) à tracer en fonction de cette
     distance : TN existant (thalweg relevé) et fond de lit projet (anchor_z). Les champs
@@ -52,6 +69,8 @@ class LongitudinalProfile:
     stations: List[Tuple[float, str]] = field(default_factory=list)
     names_existing: List[str] = field(default_factory=list)
     names_project: List[str] = field(default_factory=list)
+    # Déblai / remblai de chaque profil en travers (cf. ProfileController.station_earthworks).
+    earthworks: List[StationEarthworks] = field(default_factory=list)
 
 
 def build_longitudinal_profile(

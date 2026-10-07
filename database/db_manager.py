@@ -923,6 +923,27 @@ class DatabaseManager:
         result.sort(key=lambda t: t[0])
         return result
 
+    def get_scenario_profile_states(self, scenario_id: int) -> List[Dict]:
+        """État enregistré de chaque profil du scénario — {name, distance, existing_data,
+        project_params} — trié par distance croissante. Sert au calcul des déblais /
+        remblais de tous les profils, affichés sur le profil en long."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT name, distance, existing_data, project_params FROM profiles WHERE scenario_id = ?",
+                (scenario_id,)
+            ).fetchall()
+        states = [
+            {
+                "name": row["name"],
+                "distance": row["distance"],
+                "existing_data": json.loads(row["existing_data"]) if row["existing_data"] else [],
+                "project_params": json.loads(row["project_params"]) if row["project_params"] else {},
+            }
+            for row in rows
+        ]
+        states.sort(key=lambda state: state["distance"])
+        return states
+
     def delete_profile(self, profile_id: int) -> None:
         """Supprime un profil spécifique."""
         with self._get_connection() as conn:

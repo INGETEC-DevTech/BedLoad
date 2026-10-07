@@ -428,3 +428,34 @@ def test_export_import_keeps_both_background_profile_boxes(tmp_path):
 
     restored = db.load_profile_state(new_id)[1]
     assert (restored["show_overlay_project"], restored["show_overlay_hydraulics"]) == (True, False)
+
+
+# --- Paramètres hérités de l'Excel, retirés du modèle ---
+
+# Clés que des profils et exports anciens contiennent encore (d50, x_end_*...) : elles ne
+# servent plus nulle part et doivent être ignorées, sans empêcher le chargement.
+LEGACY_PARAMS = {
+    "d50": 0.004, "x_end_profile_left": 0.1, "x_end_profile_right": 11.0,
+    "x_end_equals_profile_width": False, "x_end_rd": 11.0, "keep_existing_slope": False,
+    "delete_point_left_bank": False, "delete_point_right_bank": True,
+}
+
+
+def test_old_export_with_legacy_parameters_still_imports_and_draws(tmp_path):
+    from core.controller import ProfileController, ViewMode
+    db = make_db(tmp_path)
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id, existing_data, project_params = populate_profile(db, scenario_id)
+    data = db.export_profile(profile_id)
+    data["project_params"] = {**data["project_params"], **LEGACY_PARAMS}
+    path = tmp_path / "ancien.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    imported = db.import_profile_into_scenario(scenario_id, db.read_export_file(path))
+    existing, params = db.load_profile_state(imported)
+
+    controller = ProfileController()
+    merged = {**controller.default_project_params(), **params}
+    for mode in ViewMode:
+        assert controller.build_figure(existing, merged, mode) is not None
+    assert controller.station_earthworks(db.get_scenario_profile_states(scenario_id))[0].computed

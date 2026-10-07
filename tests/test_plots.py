@@ -1,5 +1,11 @@
+import pytest
+
+from core.controller import ProfileController
+from core.earthworks import compute_earthworks
+from core.geometry import build_project_cross_section
 from core.longitudinal import build_longitudinal_profile, LongitudinalProfile
-from viz.plots import plot_longitudinal_profile, HARD_POINT_COLOR
+from core.models import CrossSection as _Section, Point as _Point
+from viz.plots import plot_longitudinal_profile, CUT_COLOR, HARD_POINT_COLOR
 
 POINTS = [
     {"name": "A", "pk": 1000.0, "z": 50.0},
@@ -52,3 +58,92 @@ def test_cross_section_names_are_shown_at_their_distance():
     assert list(_trace(fig, "TN existant (thalweg)").text) == ["PK 1100"]
     assert list(_trace(fig, "Projet (fond de lit)").text) == ["PK 1100", "Seuil aval"]
 
+
+
+def test_every_chart_pans_by_default_and_has_a_minor_grid():
+    """Glisser déplace la vue (pas de zoom au cadre par défaut), et une grille secondaire
+    s'ajoute à la principale, sur les profils en travers comme sur le profil en long."""
+    from core.models import CrossSection, Point
+    from viz.plots import plot_single_profile
+    cross = plot_single_profile(CrossSection("s", [Point(x=0, z=1), Point(x=1, z=0)]))
+    longitudinal = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0]))
+
+    for fig in (cross, longitudinal):
+        assert fig.layout.dragmode == "pan"
+        for axis in (fig.layout.xaxis, fig.layout.yaxis):
+            assert axis.showgrid and axis.minor.showgrid
+            assert axis.minor.nticks == 2  # une seule ligne fine entre deux principales
+
+
+# --- Déblai / remblai de chaque profil sur le profil en long ---
+
+EXISTING = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(-5, 52), (0, 49), (5, 48), (10, 49), (20, 52)]]
+
+
+def _states():
+    return [
+        {"name": "Amont", "distance": 0.0, "existing_data": EXISTING, "project_params": {"anchor_z": 48.5}},
+        {"name": "Milieu", "distance": 50.0, "existing_data": EXISTING, "project_params": {"anchor_z": 47.0}},
+        {"name": "Aval", "distance": 100.0, "existing_data": EXISTING, "project_params": {}},
+    ]
+
+
+def test_station_earthworks_match_the_cross_section_computation():
+    controller = ProfileController()
+    stations = controller.station_earthworks(_states())
+
+    existing = _Section("Existant", [_Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in EXISTING])
+    for station, anchor_z in zip(stations[:2], (48.5, 47.0)):
+        params = controller._to_project_parameters({**controller.default_project_params(), "anchor_z": anchor_z})
+        expected = compute_earthworks(existing, build_project_cross_section(params, name="Projet"))
+        assert station.computed
+        assert station.cut == pytest.approx(expected.cut_total)
+        assert station.fill == pytest.approx(expected.fill_total)
+    assert not stations[2].computed and stations[2].note == "profil projet non renseigné"
+
+
+def test_station_without_existing_points_is_not_computed():
+    station, = ProfileController().station_earthworks(
+        [{"name": None, "distance": 30.0, "existing_data": [], "project_params": {"anchor_z": 1.0}}])
+    assert not station.computed and station.note == "profil existant incomplet"
+    assert station.name == "30 m"
+
+
+def _earthworks_traces(fig):
+    return [t for t in fig.data if t.legendgroup == "earthworks"]
+
+
+def test_longitudinal_shows_each_profile_earthworks_on_hover_and_the_scenario_sum_in_the_legend():
+    controller = ProfileController()
+    stations = controller.station_earthworks(_states())
+    rows = [(0.0, 48.0, 48.5, "Amont"), (50.0, 48.0, 47.0, "Milieu"), (100.0, 48.0, None, "Aval")]
+
+    fig = controller.build_longitudinal_figure(rows, None, stations)
+
+    hover, cut_entry, fill_entry, balance_entry = _earthworks_traces(fig)
+    # Info-bulles : marqueurs invisibles, hors légende.
+    assert list(hover.x) == [0.0, 50.0, 100.0]
+    assert hover.marker.opacity == 0 and hover.showlegend is False
+    assert f"déblai {stations[1].cut:.2f} m²" in hover.text[1]
+    assert "non calculé (profil projet non renseigné)" in hover.text[2]
+
+    # Légende : un groupe titré, une entrée par grandeur.
+    cut = stations[0].cut + stations[1].cut
+    fill = stations[0].fill + stations[1].fill
+    title = cut_entry.legendgrouptitle.text
+    assert "Déblais / remblais du scénario" in title and "2 profils calculés sur 3" in title
+    assert cut_entry.name == f"Déblai : <b>{cut:.2f} m²</b>"
+    assert cut_entry.marker.color == CUT_COLOR
+    assert fill_entry.name == f"Remblai : <b>{fill:.2f} m²</b>"
+    assert balance_entry.name.startswith(f"Bilan : <b>{cut - fill:+.2f} m²</b>")
+
+
+def test_longitudinal_legend_is_framed_and_beside_the_chart():
+    fig = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0]))
+    assert fig.layout.legend.borderwidth == 1
+    assert fig.layout.legend.orientation == "v" and fig.layout.legend.x > 1
+
+
+def test_longitudinal_without_earthworks_has_no_earthworks_trace():
+    fig = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0]))
+    assert not _earthworks_traces(fig)
