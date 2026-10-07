@@ -303,17 +303,9 @@ class Sidebar(QWidget):
         # 2. Boutons d'action : Primaire et Secondaires
         self.btn_add_project = QPushButton("+ Nouveau Projet")
         self.btn_add_project.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_add_project.setStyleSheet(theme.qss("""
-            QPushButton { background-color: $PRIMARY; color: $SURFACE; border: none; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
-            QPushButton:hover { background-color: $PRIMARY_HOVER; }
-            QPushButton:pressed { background-color: $PRIMARY_PRESSED; }
-        """))
+        self.btn_add_project.setStyleSheet(theme.BUTTON_PRIMARY_QSS)
 
-        secondary_qss = theme.qss("""
-            QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
-            QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
-            QPushButton:pressed { background-color: $HOVER; }
-        """)
+        secondary_qss = theme.BUTTON_SECONDARY_QSS
         self.btn_add_scenario = QPushButton("+ Nouveau Scénario")
         self.btn_add_scenario.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_scenario.setStyleSheet(secondary_qss)
@@ -533,6 +525,7 @@ class Sidebar(QWidget):
             return
         index = self.model.indexFromItem(item)
         self.tree_view.setCurrentIndex(index)
+        self.tree_view.scrollTo(index)
         self.on_item_clicked(index)
 
     # --- Sélection ---
@@ -548,6 +541,11 @@ class Sidebar(QWidget):
         """Sélectionne un scénario comme si l'utilisateur avait cliqué dessus (ouvre son
         profil en long) — ex. double-clic dans le récapitulatif du projet."""
         self._select((SCENARIO, scenario_id))
+
+    def select_project(self, project_id: int):
+        """Sélectionne un projet comme si l'utilisateur avait cliqué dessus (affiche son
+        récapitulatif) — ex. clic sur un projet récent de la page d'accueil."""
+        self._select((PROJECT, project_id))
 
     def selection_labels(self):
         """Libellés du chemin du nœud sélectionné, quel que soit son type — ex. (projet,

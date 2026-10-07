@@ -17,6 +17,19 @@ DATA_DIR_NAME = "data"
 DB_FILE_NAME = "hydrotopo.db"
 LOG_FILE_NAME = "hydrotopo.log"
 
+# Ressources en lecture seule embarquées dans l'exe (cf. HydroTopo_V2.spec).
+ASSETS_DIR_NAME = "assets"
+LOGO_FILE_NAME = "logo_ingetec.png"
+
+
+def get_assets_dir() -> Path:
+    """Dossier des ressources (logo...). À la différence de la base et du journal, elles ne
+    sont pas à côté de l'exe : PyInstaller les extrait au lancement dans un dossier
+    temporaire (sys._MEIPASS)."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS) / ASSETS_DIR_NAME
+    return Path(__file__).resolve().parent.parent / ASSETS_DIR_NAME
+
 
 def _write_problem(directory: Path) -> Optional[str]:
     """Essaie réellement d'écrire dans `directory` (le créant au besoin) : sous Windows,

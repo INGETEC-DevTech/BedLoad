@@ -71,3 +71,18 @@ def qss(template: str) -> str:
     d'accolades qu'il faudrait sinon toutes doubler, ce qui le rendrait illisible.
     """
     return Template(template).substitute(_TOKENS)
+
+
+# --- Boutons d'action partagés (barre latérale, page d'accueil) ---
+# Un même rôle doit avoir le même aspect partout : « + Nouveau Projet » de la page
+# d'accueil est le bouton de la barre latérale, pas une variante.
+BUTTON_PRIMARY_QSS = qss("""
+    QPushButton { background-color: $PRIMARY; color: $SURFACE; border: none; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
+    QPushButton:hover { background-color: $PRIMARY_HOVER; }
+    QPushButton:pressed { background-color: $PRIMARY_PRESSED; }
+""")
+BUTTON_SECONDARY_QSS = qss("""
+    QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
+    QPushButton:hover { background-color: $BACKGROUND; border-color: $BORDER_HOVER; }
+    QPushButton:pressed { background-color: $HOVER; }
+""")

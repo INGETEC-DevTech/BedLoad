@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import logging
@@ -410,6 +411,46 @@ class DatabaseManager:
                     scenario["profiles"] = [dict(row) for row in cursor.fetchall()]
 
             return projects
+
+    def get_recent_projects(self, limit: int) -> List[Dict]:
+        """Les `limit` projets actifs (non archivés) modifiés le plus récemment, du plus
+        récent au plus ancien : {id, name, last_modified}. Faute de date de modification
+        propre au projet, `last_modified` est la plus récente de sa création, de celle de
+        ses scénarios et du dernier enregistrement de ses profils (création, import ou
+        saisie dans le formulaire). Renommages, points durs et suppressions n'en laissent
+        pas. C'est un datetime en heure locale (None si le projet n'a aucune date)."""
+        with self._get_connection() as conn:
+            # MAX() à plusieurs arguments vaut NULL dès que l'un d'eux l'est : chaque date
+            # absente est donc remplacée par '' (antérieur à toute date au format texte).
+            rows = conn.execute(
+                """SELECT p.id, p.name,
+                          MAX(COALESCE(p.created_at, ''),
+                              COALESCE((SELECT MAX(s.created_at) FROM scenarios s
+                                         WHERE s.project_id = p.id), ''),
+                              COALESCE((SELECT MAX(pr.last_updated) FROM profiles pr
+                                         JOIN scenarios s ON pr.scenario_id = s.id
+                                         WHERE s.project_id = p.id), '')) AS last_modified
+                   FROM projects p WHERE p.archived = 0
+                   ORDER BY last_modified DESC, p.id DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {"id": row["id"], "name": row["name"], "last_modified": self._local_time(row["last_modified"])}
+            for row in rows
+        ]
+
+    @staticmethod
+    def _local_time(utc_text: Optional[str]) -> Optional[datetime]:
+        """Horodatage écrit par SQLite (CURRENT_TIMESTAMP : texte UTC "AAAA-MM-JJ HH:MM:SS")
+        converti en heure locale, ou None s'il est absent ou illisible."""
+        if not utc_text:
+            return None
+        try:
+            moment = datetime.fromisoformat(utc_text)
+        except (TypeError, ValueError):
+            return None
+        return moment.replace(tzinfo=timezone.utc).astimezone()
 
     def get_archived_projects(self) -> List[Dict]:
         """Projets archivés, triés par nom : {id, name, scenario_count, profile_count}.

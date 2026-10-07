@@ -1,6 +1,7 @@
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -883,3 +884,65 @@ def test_longitudinal_data_carries_the_profile_names(tmp_path):
 
     assert [(r[0], r[3]) for r in rows] == [(0.0, "Amont"), (200.0, "Aval")]
 
+
+
+# --- Projets récents (page d'accueil) ---
+
+def execute(db: DatabaseManager, sql: str, params=()):
+    """Écriture directe en base : fixe des horodatages précis (CURRENT_TIMESTAMP n'a qu'une
+    résolution d'une seconde, trop grossière pour ordonner des créations successives)."""
+    conn = sqlite3.connect(db.db_path)
+    try:
+        conn.execute(sql, params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_recent_projects_follow_the_latest_activity_and_skip_archives(tmp_path):
+    db = make_db(tmp_path)
+    old = db.create_project("Ancien")
+    busy = db.create_project("Actif")
+    archived = db.create_project("Rangé")
+    profile_id = db.create_or_get_profile(db.create_scenario(busy, "S"), "PK 0", 0.0)
+    execute(db, "UPDATE projects SET created_at = '2026-01-01 08:00:00'")
+    execute(db, "UPDATE projects SET created_at = '2026-03-01 08:00:00' WHERE id = ?", (old,))
+    execute(db, "UPDATE scenarios SET created_at = '2026-02-01 08:00:00'")
+    execute(db, "UPDATE profiles SET last_updated = '2026-02-01 08:00:00'")
+    db.set_project_archived(archived, True)
+
+    # "Actif" a son scénario et son profil, mais "Ancien" a été créé plus tard...
+    assert [p["name"] for p in db.get_recent_projects(5)] == ["Ancien", "Actif"]
+
+    # ... jusqu'à ce qu'un profil d'"Actif" soit enregistré.
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 1.0}], {})
+    assert [p["name"] for p in db.get_recent_projects(5)] == ["Actif", "Ancien"]
+
+    execute(db, "UPDATE scenarios SET created_at = '2026-04-01 08:00:00'")
+    execute(db, "UPDATE profiles SET last_updated = '2026-02-01 08:00:00'")
+    assert [p["name"] for p in db.get_recent_projects(5)] == ["Actif", "Ancien"]
+
+
+def test_recent_projects_are_limited_and_dated_in_local_time(tmp_path):
+    db = make_db(tmp_path)
+    for name in ("A", "B", "C"):
+        db.create_project(name)
+    execute(db, "UPDATE projects SET created_at = '2026-05-0' || id || ' 10:30:00'")
+
+    recent = db.get_recent_projects(2)
+
+    assert [p["name"] for p in recent] == ["C", "B"]
+    expected = datetime(2026, 5, 3, 10, 30, tzinfo=timezone.utc).astimezone()
+    assert recent[0]["last_modified"] == expected
+    assert recent[0]["last_modified"].utcoffset() == expected.utcoffset()
+
+
+def test_a_project_without_any_date_comes_last(tmp_path):
+    db = make_db(tmp_path)
+    undated = db.create_project("Sans date")
+    db.create_project("Daté")
+    execute(db, "UPDATE projects SET created_at = NULL WHERE id = ?", (undated,))
+
+    recent = db.get_recent_projects(5)
+
+    assert [(p["name"], p["last_modified"] is None) for p in recent] == [("Daté", False), ("Sans date", True)]

@@ -8,12 +8,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 from core.excel_export import export_project_profile
+from core.utils import LOGO_FILE_NAME, get_assets_dir
 from database.db_manager import DatabaseManager
 from ui.sidebar import Sidebar
 from ui.forms.existing_form import ExistingProfileForm
 from ui.forms.project_form import ProjectProfileForm
 from ui.forms.hydraulics_form import HydraulicsForm
 from ui.views.plot_view import PlotView
+from ui.views.home_view import RECENT_PROJECTS_COUNT, HomeView
 from ui.views.project_summary_view import ProjectSummaryView
 from ui import theme
 
@@ -22,12 +24,8 @@ from core.controller import ProfileController, ViewMode
 class MainWindow(QMainWindow):
     TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT, ViewMode.HYDRAULICS]
 
-    # Textes (titre, aide) de la page d'accueil, selon ce qui est sélectionné.
-    WELCOME_DEFAULT = (
-        "Aucun profil sélectionné",
-        "Choisissez un scénario pour son profil en long,\n"
-        "ou un profil pour éditer son profil en travers.",
-    )
+    # Textes (titre, aide) affichés à la place des formulaires quand la zone Draft est
+    # sélectionnée. Quand rien n'est sélectionné, c'est la page d'accueil (HomeView).
     WELCOME_DRAFT_ZONE = (
         "Zone Draft",
         "Brouillons de test, sans lien avec les projets.\n"
@@ -53,21 +51,24 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(self.db_manager)
         main_splitter.addWidget(self.sidebar)
         
-        # 2. Zone de travail (Le splitter est affiché dès le départ). Elle alterne avec le
-        # récapitulatif du projet, affiché à sa place quand on clique sur un projet.
+        # 2. Zone de travail. Elle alterne avec le récapitulatif du projet, affiché à sa
+        # place quand on clique sur un projet, et avec la page d'accueil, affichée quand rien
+        # n'est sélectionné (au lancement notamment).
         self.work_stack = QStackedWidget()
         main_splitter.addWidget(self.work_stack)
         work_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.work_stack.addWidget(work_splitter)
         self.summary_view = ProjectSummaryView()
         self.work_stack.addWidget(self.summary_view)
+        self.home_view = HomeView(get_assets_dir() / LOGO_FILE_NAME)
+        self.work_stack.addWidget(self.home_view)
         # Projet dont le récapitulatif est affiché, ou None.
         self._summary_project_id = None
         
         # 2a. Panneau des formulaires (Caché au démarrage via StackedWidget)
         self.forms_stack = QStackedWidget()
         
-        # Index 0 : Message d'accueil (prend la place des formulaires vides)
+        # Index 0 : Message (zone Draft sélectionnée) à la place des formulaires vides
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
         welcome_layout.setContentsMargins(
@@ -90,7 +91,6 @@ class MainWindow(QMainWindow):
             "color: $TEXT_MUTED; font-size: ${FONT_SIZE_BASE}px;"
         ))
         welcome_layout.addWidget(self.lbl_welcome_hint)
-        self._set_welcome_text(*self.WELCOME_DEFAULT)
         welcome_layout.addStretch()
         self.forms_stack.addWidget(welcome_widget)
         
@@ -184,8 +184,13 @@ class MainWindow(QMainWindow):
         self.sidebar.project_selected.connect(self.show_project_summary)
         self.summary_view.scenario_activated.connect(self.sidebar.select_scenario)
         self.sidebar.tree_refreshed.connect(self._refresh_project_summary)
+        self.sidebar.tree_refreshed.connect(self._refresh_home)
         self.sidebar.draft_zone_selected.connect(lambda: self.show_placeholder(*self.WELCOME_DRAFT_ZONE))
-        self.sidebar.selection_cleared.connect(lambda: self.show_placeholder(*self.WELCOME_DEFAULT))
+        self.sidebar.selection_cleared.connect(self.show_home)
+        # Actions rapides de la page d'accueil : exactement celles de la barre latérale.
+        self.home_view.new_project_requested.connect(self.sidebar.add_project)
+        self.home_view.import_requested.connect(self.sidebar.import_file)
+        self.home_view.project_activated.connect(self.sidebar.select_project)
         self.sidebar.project_data_changed.connect(self._on_project_data_changed)
         self.sidebar.context_changed.connect(
             lambda: self._update_context_bar(self.sidebar.current_context())
@@ -196,6 +201,9 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.form_project.export_excel_requested.connect(self.export_project_excel)
         self.plot_view.expand_toggled.connect(self.toggle_plot_expanded)
+
+        # Rien n'est sélectionné au lancement.
+        self.show_home()
 
     def toggle_plot_expanded(self):
         """Bouton "Agrandir" / "Réduire" (ou Échap) : le graphique occupe toute la fenêtre,
@@ -281,6 +289,25 @@ class MainWindow(QMainWindow):
         if self._summary_project_id is not None:
             self.show_project_summary(self._summary_project_id)
 
+    def show_home(self):
+        """Rien de sélectionné (lancement, élément ouvert supprimé ou archivé) : page
+        d'accueil à la place de toute la zone de travail, projets récents à jour."""
+        self._current_target = None
+        self._summary_project_id = None
+        self._update_context_bar(None)
+        self.work_stack.setCurrentWidget(self.home_view)
+        self._refresh_home()
+
+    def _refresh_home(self):
+        """Relit en base les projets récents de la page d'accueil si elle est affichée
+        (projet créé, renommé, supprimé, archivé ou restauré depuis la barre latérale)."""
+        if self.work_stack.currentWidget() is not self.home_view:
+            return
+        self.home_view.set_recent_projects(
+            self.db_manager.get_recent_projects(RECENT_PROJECTS_COUNT),
+            archived_count=len(self.db_manager.get_archived_projects()),
+        )
+
     def _show_work_area(self):
         """Formulaires et graphique à la place du récapitulatif de projet."""
         self._summary_project_id = None
@@ -317,8 +344,8 @@ class MainWindow(QMainWindow):
         self.lbl_welcome_hint.setText(hint)
 
     def show_placeholder(self, title: str, hint: str):
-        """Rien à éditer ni à tracer (projet ou zone Draft sélectionnés, ou élément ouvert
-        supprimé) : page d'accueil à la place des formulaires, graphique vidé."""
+        """Rien à éditer ni à tracer (zone Draft sélectionnée) : message à la place des
+        formulaires, graphique vidé."""
         self._current_target = None
         self._show_work_area()
         self._update_context_bar(None)

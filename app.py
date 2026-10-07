@@ -1,5 +1,13 @@
 # app.py
 import sys
+
+# Écran de démarrage de l'exe (cf. ui/splash_screen.py) : l'étape s'affiche avant les
+# imports qui suivent, les plus longs du démarrage. Une erreur, même pendant ces imports,
+# ferme l'écran avant d'être affichée (il est toujours au premier plan).
+from ui import splash_screen
+splash_screen.close_on_error()
+splash_screen.show_step("Chargement des modules…")
+
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
@@ -178,6 +186,8 @@ def global_exception_handler(exc_type, exc_value, exc_tb):
     # Enregistrement silencieux du crash
     logging.critical(f"Crash inattendu : {exc_value}\n{error_msg}")
 
+    # Une erreur pendant le démarrage ne doit pas rester cachée sous l'écran de démarrage.
+    splash_screen.close()
     msg_box = QMessageBox()
     msg_box.setIcon(QMessageBox.Icon.Critical)
     msg_box.setWindowTitle("Erreur critique")
@@ -194,6 +204,7 @@ def check_storage_or_warn(base_dir) -> bool:
     problem = find_storage_problem(base_dir)
     if problem is None:
         return True
+    splash_screen.close()
     QMessageBox.critical(None, "HydroTopo ne peut pas démarrer", problem)
     return False
 
@@ -213,8 +224,13 @@ if __name__ == "__main__":
     app.setStyle("Fusion") 
     app.setStyleSheet(QSS_THEME)
     
+    splash_screen.show_step("Préparation de l'interface…")
     window = MainWindow()
     window.showMaximized()
+    # L'écran de démarrage ne se retire qu'une fois la fenêtre peinte (pas de fenêtre vide
+    # entre les deux), et avant les messages de démarrage, qu'il masquerait.
+    app.processEvents()
+    splash_screen.close()
     QTimer.singleShot(0, window.show_startup_messages)
     
     sys.exit(app.exec())

@@ -708,7 +708,7 @@ def test_profile_saved_with_legacy_excel_parameters_still_opens(main_window):
     assert not set(legacy) & set(main_window.form_project.get_data())
 
 
-def test_deleting_the_open_draft_returns_to_the_welcome_page(main_window):
+def test_deleting_the_open_draft_returns_to_the_home_page(main_window):
     db = main_window.db_manager
     draft_id = db.create_draft("Essai")
     main_window.sidebar.refresh_tree()
@@ -718,7 +718,86 @@ def test_deleting_the_open_draft_returns_to_the_welcome_page(main_window):
     main_window.sidebar.refresh_tree()
 
     assert main_window._current_target is None
-    assert main_window.forms_stack.currentIndex() == 0
+    assert main_window.work_stack.currentWidget() is main_window.home_view
+
+
+# --- Page d'accueil ---
+
+def test_home_page_is_shown_at_startup_and_lists_recent_projects(main_window):
+    home = main_window.home_view
+    assert main_window.work_stack.currentWidget() is home
+    assert home.lbl_empty_title.text() == "Aucun projet pour l'instant"
+
+    main_window.db_manager.create_project("Rivière X")
+    main_window.sidebar.refresh_tree()
+
+    assert [row.text() for row in home._rows] == ["Rivière X"]
+    assert home.empty_card.isHidden()
+
+
+def test_clicking_a_recent_project_selects_it_and_shows_its_summary(main_window):
+    db = main_window.db_manager
+    project_id = db.create_project("Rivière X")
+    db.create_scenario(project_id, "Base")
+    main_window.sidebar.refresh_tree()
+
+    main_window.home_view._rows[0].click()
+
+    assert main_window.sidebar.selection_labels() == ("Rivière X",)
+    assert main_window.work_stack.currentWidget() is main_window.summary_view
+    assert main_window.summary_view.lbl_title.text() == "Projet « Rivière X »"
+
+
+def test_home_new_project_runs_the_sidebar_action(main_window, monkeypatch):
+    answer_inputs(monkeypatch, texts=["Nouveau"])
+    monkeypatch.setattr(sidebar_module.HardPointsDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+
+    main_window.home_view.btn_new_project.click()
+
+    project = main_window.db_manager.get_all_projects()[0]
+    assert project["name"] == "Nouveau"
+    # Comme depuis la barre latérale : son scénario initial est ouvert (profil en long).
+    assert main_window.sidebar.selection_labels() == ("Nouveau", DEFAULT_SCENARIO_NAME)
+    assert main_window.work_stack.currentWidget() is main_window._work_splitter
+
+
+def test_home_import_runs_the_sidebar_action(main_window, monkeypatch, tmp_path):
+    db = main_window.db_manager
+    project_id = db.create_project("Exporté")
+    db.create_scenario(project_id, "Base")
+    path = tmp_path / "projet.json"
+    db.export_project_to_file(project_id, path)
+    db.delete_project(project_id)
+    main_window.sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    forbid_item_choice(monkeypatch)
+
+    main_window.home_view.btn_import.click()
+
+    assert [p["name"] for p in db.get_all_projects()] == ["Exporté"]
+    assert main_window.work_stack.currentWidget() is main_window.summary_view
+
+
+def test_home_page_follows_deletions_and_archiving(main_window):
+    db = main_window.db_manager
+    kept = db.create_project("Gardé")
+    deleted = db.create_project("Supprimé")
+    archived = db.create_project("Rangé")
+    db.create_scenario(archived, "S")
+    main_window.sidebar.refresh_tree()
+    assert sorted(row.text() for row in main_window.home_view._rows) == ["Gardé", "Rangé", "Supprimé"]
+
+    # Suppression pendant que la page d'accueil est affichée.
+    db.delete_project(deleted)
+    main_window.sidebar.refresh_tree()
+    assert sorted(row.text() for row in main_window.home_view._rows) == ["Gardé", "Rangé"]
+
+    # Archivage du projet ouvert : retour à l'accueil, sans lui.
+    click(main_window.sidebar, (PROJECT, archived))
+    main_window.sidebar.archive_project_item({"type": PROJECT, "id": archived})
+    assert main_window.work_stack.currentWidget() is main_window.home_view
+    assert [row.text() for row in main_window.home_view._rows] == ["Gardé"]
+    assert db.get_recent_projects(5)[0]["id"] == kept
 
 
 # --- Export / Import (JSON) ---
