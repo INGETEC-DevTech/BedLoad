@@ -1,7 +1,8 @@
 # core/hydraulics.py
 import math
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-from core.models import Point, CrossSection
+from core.models import Point, CrossSection, Subsection
 
 # Limites (X gauche, X droite) de la zone dans laquelle on fait le calcul, ou None pour
 # tout le profil. Chaque limite agit comme une paroi verticale fictive : l'eau ne s'étend
@@ -15,12 +16,26 @@ Bounds = Optional[Tuple[float, float]]
 # (arrondis de calcul flottant), pour la fermeture des lits et la détection de débordement.
 _Z_TOLERANCE = 1e-9
 
+# Précision de la recherche de cote en mode "Imposer Q" (cf. find_water_level_for_discharge) :
+# débit à 0.1 % du débit cible et cote à 1 mm près. Relative, la tolérance sur le débit vaut
+# aussi bien pour un petit débit (0.03 m³/s) que pour une crue (plusieurs centaines de m³/s).
+Q_RELATIVE_TOLERANCE = 1e-3
+_SOLVER_Z_TOLERANCE = 1e-3
+
+
+def target_discharge_reached(q: float, target_q: float) -> bool:
+    """Le débit obtenu atteint-il le débit cible, à Q_RELATIVE_TOLERANCE près ? Règle unique,
+    partagée par la recherche de cote et par l'affichage (débit "Saisi", avertissement
+    "débit cible non atteint"), pour qu'ils ne se contredisent jamais."""
+    return abs(q - target_q) <= Q_RELATIVE_TOLERANCE * abs(target_q)
+
 
 def _empty_result(water_z: Optional[float], overflow_sides: Optional[List[str]] = None,
                   water_intervals: Optional[List[Tuple[float, float]]] = None) -> dict:
     return {"S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0, "water_z": water_z,
             "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
-            "overflow_sides": overflow_sides or [], "water_intervals": water_intervals or []}
+            "subsections": [], "overflow_sides": overflow_sides or [],
+            "water_intervals": water_intervals or []}
 
 
 def free_end_levels(section: CrossSection, bounds: Bounds = None) -> Dict[str, float]:
@@ -150,6 +165,52 @@ def get_wet_beds(section: CrossSection, water_z: float, bounds: Bounds = None,
     ]
 
 
+@dataclass
+class _WetPart:
+    """Portion mouillée d'un lit, comprise dans une seule partie de la section (subsection
+    None : section non découpée, le lit entier). C'est l'entrée de la méthode de calcul du
+    débit (cf. _divided_channel_discharges)."""
+    subsection: Optional[Subsection]
+    bed_index: int
+    area: float
+    perimeter: float
+    ks: float
+
+
+def _split_bed(bed: List[Point], subsections: List[Subsection]) -> List[Tuple[Optional[Subsection], List[Point]]]:
+    """Découpe un lit mouillé par les verticales qui séparent les parties de la section :
+    une portion de terrain par partie traversée, le terrain étant interpolé sur chaque
+    verticale. Sans découpage, le lit reste d'un seul bloc."""
+    if not subsections:
+        return [(None, bed)]
+    pieces = []
+    for subsection in subsections:
+        piece, _, _ = clip_to_bounds(bed, (subsection.x_min, subsection.x_max))
+        if len(piece) >= 2:
+            pieces.append((subsection, piece))
+    return pieces
+
+
+def _wet_area_and_perimeter(points: List[Point], water_z: float) -> Tuple[float, float]:
+    """Surface sous la cote d'eau (méthode des trapèzes) et longueur de terrain mouillé. Les
+    verticales qui bornent la portion (découpage, limites de zone) ne sont pas du terrain :
+    elles ne comptent pas dans le périmètre."""
+    area = perimeter = 0.0
+    for p1, p2 in zip(points, points[1:]):
+        area += (p2.x - p1.x) * ((water_z - p1.z) + (water_z - p2.z)) / 2.0
+        perimeter += math.hypot(p2.x - p1.x, p2.z - p1.z)
+    return area, perimeter
+
+
+def _divided_channel_discharges(parts: List[_WetPart], slope: float) -> List[float]:
+    """Méthode des lits séparés : chaque partie est un canal de Manning-Strickler
+    indépendant (sa surface, son périmètre, son Ks), le débit total est la somme. La méthode
+    de Debord, qui tient compte des échanges entre lit mineur et lit majeur, s'ajoutera à
+    côté avec la même entrée (toutes les parties à la fois)."""
+    return [part.ks * part.area * math.pow(part.area / part.perimeter, 2 / 3) * math.sqrt(slope)
+            for part in parts]
+
+
 def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float, ks: float,
                              bounds: Bounds = None) -> dict:
     """Calcule S (surface), P (périmètre mouillé), Rh, vitesse et débit pour une cote d'eau
@@ -158,14 +219,19 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
     Avec plusieurs lits séparés, le débit est la somme des débits de Manning-Strickler de
     chaque lit (somme des débitances), chacun avec son propre rayon hydraulique : un seul
     Rh global sous-estimerait le lit principal en le moyennant avec un petit lit voisin.
+    Une section découpée (section.subsections, profil projet) est calculée de même partie
+    par partie : sans cela, l'eau qui s'étale sur une banquette ou un lit majeur allonge
+    brutalement le périmètre et le débit chute alors que l'eau monte.
     V est la vitesse moyenne Q / S, Rh le rapport global S / P (pour information).
     `wet_intervals` liste les (x_gauche, x_droite) de chaque lit, pour l'affichage, et
     `bed_discharges` le débit de chacun (même ordre) ; x_left et x_right en sont les bornes
-    extrêmes. `overflow_sides` liste les extrémités libres ("left", "right") que la cote
-    d'eau dépasse : l'eau y déborderait hors du profil, le lit concerné est ignoré (pas de
-    modélisation du débordement) et l'appelant doit le signaler. `water_intervals` liste,
-    pour l'affichage de la ligne d'eau, tous les lits en eau, y compris ceux qui débordent
-    (étendus jusqu'à l'extrémité du profil) : la ligne reste visible en cas de débordement."""
+    extrêmes. `subsections` détaille chaque partie mouillée de la section découpée (nom,
+    S, P, Q, V), de gauche à droite. `overflow_sides` liste les extrémités libres ("left",
+    "right") que la cote d'eau dépasse : l'eau y déborderait hors du profil, le lit concerné
+    est ignoré (pas de modélisation du débordement) et l'appelant doit le signaler.
+    `water_intervals` liste, pour l'affichage de la ligne d'eau, tous les lits en eau, y
+    compris ceux qui débordent (étendus jusqu'à l'extrémité du profil) : la ligne reste
+    visible en cas de débordement."""
     overflow_sides = [side for side, z in free_end_levels(section, bounds).items()
                       if water_z > z + _Z_TOLERANCE]
     water_intervals = [(bed[0].x, bed[-1].x)
@@ -175,32 +241,53 @@ def compute_hydraulic_params(section: CrossSection, water_z: float, slope: float
 
     beds = get_wet_beds(section, water_z, bounds)
 
-    s_total, p_total = 0.0, 0.0
-    bed_discharges = []
-    for bed in beds:
-        s = p = 0.0
-        # Intégration par la méthode des trapèzes
-        for p1, p2 in zip(bed, bed[1:]):
-            s += (p2.x - p1.x) * ((water_z - p1.z) + (water_z - p2.z)) / 2.0
-            p += math.hypot(p2.x - p1.x, p2.z - p1.z)
-        bed_discharges.append(
-            ks * s * math.pow(s / p, 2 / 3) * math.sqrt(slope) if s > 0 and p > 0 else 0.0
-        )
-        s_total += s
-        p_total += p
-    q_total = sum(bed_discharges)
+    # Un seul Ks pour toutes les parties pour l'instant : c'est ici que le lit majeur
+    # (Subsection.floodplain) recevra son propre Ks.
+    parts = []
+    for index, bed in enumerate(beds):
+        for subsection, piece in _split_bed(bed, section.subsections):
+            area, perimeter = _wet_area_and_perimeter(piece, water_z)
+            if area > 0 and perimeter > 0:
+                parts.append(_WetPart(subsection, index, area, perimeter, ks))
+    discharges = _divided_channel_discharges(parts, slope)
 
+    s_total = sum(part.area for part in parts)
+    p_total = sum(part.perimeter for part in parts)
+    q_total = sum(discharges)
     if s_total <= 0 or p_total <= 0:
         return _empty_result(water_z, overflow_sides, water_intervals)
+
+    subsection_results = []
+    for subsection in section.subsections:
+        wet = [(part, q) for part, q in zip(parts, discharges) if part.subsection is subsection]
+        if wet:
+            area = sum(part.area for part, _ in wet)
+            q = sum(q for _, q in wet)
+            subsection_results.append({"name": subsection.name, "S": area,
+                                       "P": sum(part.perimeter for part, _ in wet),
+                                       "Q": q, "V": q / area})
 
     return {
         "S": s_total, "P": p_total, "Rh": s_total / p_total, "V": q_total / s_total, "Q": q_total,
         "water_z": water_z, "x_left": beds[0][0].x, "x_right": beds[-1][-1].x,
         "wet_intervals": [(bed[0].x, bed[-1].x) for bed in beds],
-        "bed_discharges": bed_discharges,
+        "bed_discharges": [sum(q for part, q in zip(parts, discharges) if part.bed_index == index)
+                           for index in range(len(beds))],
+        "subsections": subsection_results,
         "overflow_sides": overflow_sides,
         "water_intervals": water_intervals,
     }
+
+
+def subsection_dividers(section: CrossSection, bounds: Bounds = None) -> List[Tuple[float, float]]:
+    """Verticales de découpage de la section à tracer, (X, cote du terrain sur la
+    verticale) : celles qui tombent à l'intérieur du profil et de la zone d'écoulement (une
+    verticale au bout du profil, ex. au haut de berge sans lit majeur, ne sépare rien)."""
+    points, _, _ = clip_to_bounds(section.points, bounds)
+    if len(points) < 2:
+        return []
+    cuts = {sub.x_max for sub in section.subsections} | {sub.x_min for sub in section.subsections}
+    return [(x, _interpolate_z(points, x)) for x in sorted(cuts) if points[0].x < x < points[-1].x]
 
 
 def find_water_level_for_discharge(section: CrossSection, target_q: float, slope: float, ks: float,
@@ -210,11 +297,17 @@ def find_water_level_for_discharge(section: CrossSection, target_q: float, slope
     atteignable sans débordement (cf. overflow_level ; le point le plus haut si les deux
     côtés sont fermés par une paroi). Au-delà, le lit qui déborde serait ignoré et le débit
     retomberait : un débit cible trop fort laisse donc l'eau à ce niveau maximal, avec la
-    capacité correspondante (débit cible non atteint, signalé par l'appelant)."""
+    capacité correspondante (débit cible non atteint, signalé par l'appelant).
+
+    La dichotomie continue jusqu'à ce que le débit soit atteint (cf. target_discharge_reached)
+    ET que la cote soit encadrée à 1 mm près : à petit débit, 1 mm de cote change beaucoup
+    le débit ; à grand débit, 0.1 % du débit peut représenter plus d'1 mm de cote."""
     points, _, _ = clip_to_bounds(section.points, bounds)
     if not points:
         return _empty_result(None)
     z_min = min(p.z for p in points)
+    if target_q <= 0:  # débit nul : pas d'eau (une tolérance relative à 0 serait inatteignable)
+        return compute_hydraulic_params(section, z_min, slope, ks, bounds)
     z_max = max(p.z for p in points)
     level = overflow_level(section, bounds)
     if level is not None:
@@ -222,16 +315,17 @@ def find_water_level_for_discharge(section: CrossSection, target_q: float, slope
 
     low, high = z_min, z_max
 
-    for _ in range(100):  # 100 itérations suffisent pour une précision millimétrique
+    for _ in range(100):  # bien au-delà de la précision des flottants
         mid = (low + high) / 2.0
         res = compute_hydraulic_params(section, mid, slope, ks, bounds)
 
-        if abs(res["Q"] - target_q) < 0.01:
-            return res
-        elif res["Q"] < target_q:
+        if res["Q"] < target_q:
             low = mid
         else:
             high = mid
+        # mid est une borne de l'intervalle [low, high] qui encadre la cote cherchée.
+        if high - low <= _SOLVER_Z_TOLERANCE and target_discharge_reached(res["Q"], target_q):
+            return res
 
     # Si la crue est immense, elle s'arrête au niveau maximal sans débordement
     return compute_hydraulic_params(section, high, slope, ks, bounds)

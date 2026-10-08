@@ -75,7 +75,8 @@ class HydraulicsForm(QWidget):
         form_hydro = QFormLayout(grp_hydro)
 
         self.inputs['h_eau'] = self._create_spinbox(0.01, 100, 0.05, 3, default_val=0.42)
-        self.inputs['q_target'] = self._create_spinbox(0.1, 10000, 0.5, 2, default_val=15.0)
+        # Jusqu'à 1 L/s (0.001 m³/s) : petits fossés et rus.
+        self.inputs['q_target'] = self._create_spinbox(0.001, 10000, 0.5, 3, default_val=15.0)
         # Regroupé avec Ks : ce sont les deux seuls paramètres de la formule de
         # Manning-Strickler, ce champ n'a rien à faire dans l'onglet Géométrie.
         self.inputs['slope'] = self._create_spinbox(0.0001, 1.0, 0.001, 4)

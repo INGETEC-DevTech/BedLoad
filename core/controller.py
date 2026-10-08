@@ -11,7 +11,8 @@ from core.earthworks import compute_earthworks
 from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import (clip_to_bounds, compute_hydraulic_params, free_end_levels,
-                             overflow_level, resolve_hydraulic_result)
+                             overflow_level, resolve_hydraulic_result, subsection_dividers,
+                             target_discharge_reached)
 from core.hard_points import HardPoint, complete_points
 from core.longitudinal import StationEarthworks, build_longitudinal_profile
 from core.project_summary import ProjectSummary, ScenarioSummary, earthwork_volumes
@@ -27,6 +28,15 @@ ALL_ZONE = "all"
 LEFT_ARM = "left_arm"
 RIGHT_ARM = "right_arm"
 CUSTOM_ZONE = "custom"
+
+
+def format_discharge(q: float) -> str:
+    """Débit (m³/s) pour l'affichage, sans l'unité : 2 décimales, ou 3 chiffres significatifs
+    sous 1 m³/s, pour qu'un petit débit garde sa précision (0.0318 et 0.0315 m³/s, et non
+    0.03 tous les deux)."""
+    if q == 0 or abs(q) >= 1:
+        return f"{q:.2f}"
+    return f"{q:.{2 - math.floor(math.log10(abs(q)))}f}"
 
 
 def flow_zone_bounds(hydro_data: Dict[str, Any]) -> Tuple[str, Optional[Tuple[float, float]]]:
@@ -190,8 +200,10 @@ class ProfileController:
         color = EXISTING_COLOR if hydro_source == 'existing' else PROJECT_COLOR
 
         # Ligne d'eau tracée sur tous les lits en eau, y compris ceux qui débordent (étendus
-        # jusqu'au bord du profil) : elle reste visible en cas de débordement.
-        water = dict(water_level=res["water_z"], water_intervals=res["water_intervals"], calc_bounds=bounds)
+        # jusqu'au bord du profil) : elle reste visible en cas de débordement. Verticales de
+        # découpage en lits : profil projet seulement (le profil existant n'est pas découpé).
+        water = dict(water_level=res["water_z"], water_intervals=res["water_intervals"], calc_bounds=bounds,
+                     dividers=subsection_dividers(section, bounds))
 
         # --- Génération de la figure ---
         if show_overlay:
@@ -232,14 +244,15 @@ class ProfileController:
             if overflowing:
                 q_line = not_computable_line("Débit (Q)", "non calculable (débordement)")
             elif not is_h_calculated:
-                q_line = highlighted_line("Débit (Q)", f"{res['Q']:.2f} m³/s")
-            elif abs(res["Q"] - q_target) < 0.01:
-                q_line = discreet_line("Débit (Q)", f"{res['Q']:.2f} m³/s", "Saisi")
+                q_line = highlighted_line("Débit (Q)", f"{format_discharge(res['Q'])} m³/s")
+            elif target_discharge_reached(res["Q"], q_target):
+                q_line = discreet_line("Débit (Q)", f"{format_discharge(res['Q'])} m³/s", "Saisi")
             else:
                 # Débit cible trop fort : l'eau est laissée au niveau maximal sans
                 # débordement, Q est la capacité correspondante (cf. avertissement).
                 q_line = not_computable_line(
-                    "Débit (Q)", f"{res['Q']:.2f} m³/s (cible {q_target:.2f} m³/s non atteinte)"
+                    "Débit (Q)", f"{format_discharge(res['Q'])} m³/s "
+                                 f"(cible {format_discharge(q_target)} m³/s non atteinte)"
                 )
             h_line = (
                 highlighted_line("Tirant d'eau (h)", f"{h_relative:.2f} m")
@@ -274,7 +287,17 @@ class ProfileController:
                 texte_resultats += "<br><b>Répartition du débit :</b>"
                 for (x0, x1), q in zip(res["wet_intervals"], res["bed_discharges"]):
                     share = 100 * q / res["Q"] if res["Q"] else 0
-                    texte_resultats += f"<br>&nbsp;&nbsp;• X {x0:.2f} → {x1:.2f} m : {q:.2f} m³/s ({share:.0f} %)"
+                    texte_resultats += (f"<br>&nbsp;&nbsp;• X {x0:.2f} → {x1:.2f} m : "
+                                        f"{format_discharge(q)} m³/s ({share:.0f} %)")
+
+            # Section découpée en lits (profil projet) : débit et vitesse de chaque partie
+            # mouillée, calculée séparément (cf. compute_hydraulic_params).
+            if res["subsections"] and not overflowing:
+                texte_resultats += "<br><b>Détail par partie mouillée :</b>"
+                for part in res["subsections"]:
+                    share = 100 * part["Q"] / res["Q"] if res["Q"] else 0
+                    texte_resultats += (f"<br>&nbsp;&nbsp;• {part['name']} : {format_discharge(part['Q'])} m³/s "
+                                        f"({share:.0f} %), V = {part['V']:.2f} m/s")
 
             fig.add_annotation(
                 text=texte_resultats, align="left", showarrow=False,
@@ -431,11 +454,11 @@ class ProfileController:
         capacity = ""
         if level is not None:
             q_max = compute_hydraulic_params(section, level, slope, ks, bounds)["Q"]
-            capacity = (f"<br>Capacité maximale sans débordement : Q = {q_max:.2f} m³/s "
+            capacity = (f"<br>Capacité maximale sans débordement : Q = {format_discharge(q_max)} m³/s "
                         f"(cote Z = {level:.2f} m NGF).")
 
         if calc_mode == 'H_FROM_Q':
-            if res["water_z"] is not None and abs(res["Q"] - q_target) < 0.01:
+            if res["water_z"] is not None and target_discharge_reached(res["Q"], q_target):
                 return None
             reason = (
                 "au-delà, l'eau déborderait hors du profil (débordement non modélisé) : la cote "
@@ -444,8 +467,8 @@ class ProfileController:
                 "la cote d'eau est plafonnée au sommet du profil calculé."
             )
             return (
-                f"<b>⚠ Débit cible non atteint</b> : {q_target:.2f} m³/s demandés, "
-                f"{res['Q']:.2f} m³/s calculés —<br>{reason}{capacity}"
+                f"<b>⚠ Débit cible non atteint</b> : {format_discharge(q_target)} m³/s demandés, "
+                f"{format_discharge(res['Q'])} m³/s calculés —<br>{reason}{capacity}"
             )
 
         sides = res.get("overflow_sides") or []

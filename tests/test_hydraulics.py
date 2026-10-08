@@ -1,5 +1,7 @@
 import math
+from dataclasses import asdict, replace
 
+import pandas as pd
 import pytest
 
 from core.hydraulics import (
@@ -8,7 +10,9 @@ from core.hydraulics import (
     compute_hydraulic_params,
     find_water_level_for_discharge,
     get_wet_beds,
+    overflow_level,
     resolve_hydraulic_result,
+    subsection_dividers,
 )
 
 
@@ -18,7 +22,8 @@ def get_water_intersections(section, water_z, bounds=None):
     if not beds:
         return None, None
     return beds[0][0].x, beds[-1][-1].x
-from core.models import CrossSection, Point
+from core.models import CrossSection, Point, dataframe_to_points
+from core.controller import format_discharge
 from core.geometry import build_project_cross_section
 from core.models import ProjectParameters
 
@@ -92,7 +97,7 @@ def test_compute_hydraulic_params_invalid_slope_or_ks_returns_zeros(trapezoidal_
     assert res == {
         "S": 0, "P": 0, "Rh": 0, "V": 0, "Q": 0,
         "water_z": 1.0, "x_left": None, "x_right": None, "wet_intervals": [], "bed_discharges": [],
-        "overflow_sides": [], "water_intervals": [(0.5, 4.5)],
+        "subsections": [], "overflow_sides": [], "water_intervals": [(0.5, 4.5)],
     }
 
 
@@ -110,7 +115,7 @@ def test_find_water_level_for_discharge_converges_to_known_level(trapezoidal_sec
     res = find_water_level_for_discharge(trapezoidal_section, target_q=target, slope=0.001, ks=30.0)
 
     assert res["water_z"] == pytest.approx(1.0, abs=1e-3)
-    assert res["Q"] == pytest.approx(target, abs=0.01)
+    assert res["Q"] == pytest.approx(target, rel=1e-3)
 
 
 def test_find_water_level_for_discharge_unreachable_target_stops_at_bank_top(trapezoidal_section):
@@ -255,10 +260,201 @@ def test_find_water_level_with_bounds_solves_in_the_chosen_bed_only(two_beds_sec
 
     res = find_water_level_for_discharge(two_beds_section, target, 0.001, 30.0, bounds=(6.0, 20.0))
 
-    # La dichotomie s'arrête à 0.01 m³/s près sur le débit, pas sur la cote.
-    assert res["water_z"] == pytest.approx(1.0, abs=5e-3)
-    assert res["Q"] == pytest.approx(target, abs=0.01)
-    assert res["wet_intervals"] == [pytest.approx((7.5, 11.5), abs=1e-2)]
+    assert res["water_z"] == pytest.approx(1.0, abs=1e-3)
+    assert res["Q"] == pytest.approx(target, rel=1e-3)
+    assert res["wet_intervals"] == [pytest.approx((7.5, 11.5), abs=1e-3)]
+
+
+# --- Lit rectangulaire à berges verticales ---
+
+# Lit de 2 m de large et 1 m de profondeur : fond à z=10 de x=0 à x=2, chaque berge
+# verticale étant saisie comme deux points de même X (haut puis bas à gauche, bas puis haut
+# à droite).
+RECTANGULAR_BED_ROWS = [(0, 11), (0, 10), (2, 10), (2, 11)]
+
+
+@pytest.mark.parametrize("rows", [
+    [(-2, 11)] + RECTANGULAR_BED_ROWS + [(4, 11)],
+    # Lit saisi d'abord, plateaux ajoutés en fin de tableau : le tri par X doit déplacer des
+    # lignes, et l'ancien tri non stable retournait la berge droite (S = 0.5 m²).
+    RECTANGULAR_BED_ROWS + [(4, 11), (-2, 11), (-4, 11), (6, 11)],
+    # Profil levé de droite à gauche : retourné avant le tri, sinon chaque berge le serait.
+    [(4, 11)] + RECTANGULAR_BED_ROWS[::-1] + [(-2, 11)],
+    # Saisi de gauche à droite malgré un dernier X plus petit que le premier : le sens se
+    # lit sur l'ensemble des lignes, pas sur leurs extrémités.
+    RECTANGULAR_BED_ROWS + [(4, 11), (-2, 11)],
+], ids=["saisie_de_gauche_a_droite", "plateaux_ajoutes_en_fin", "saisie_de_droite_a_gauche",
+        "plateau_gauche_ajoute_en_fin"])
+def test_rectangular_bed_with_vertical_banks_keeps_the_entry_order_at_equal_x(rows):
+    """Les points sont triés par X mais, à X égal, gardent l'ordre de saisie du tableau, lu
+    dans le sens du levé (de gauche à droite ou de droite à gauche). Pour 0.5 m d'eau :
+    S = 2 × 0.5 = 1 m², P = fond 2 m + deux berges de 0.5 m = 3 m."""
+    table = pd.DataFrame([{"X (m)": x, "Z (m NGF)": z} for x, z in rows])
+    section = CrossSection(name="test", points=dataframe_to_points(table))
+
+    res = compute_hydraulic_params(section, water_z=10.5, slope=0.001, ks=30.0)
+
+    assert [(p.x, p.z) for p in section.points if p.x in (0, 2)] == RECTANGULAR_BED_ROWS
+    expected_v = 30.0 * (1.0 / 3.0) ** (2 / 3) * math.sqrt(0.001)
+    assert res["wet_intervals"] == [pytest.approx((0.0, 2.0))]
+    assert res["S"] == pytest.approx(1.0)
+    assert res["P"] == pytest.approx(3.0)
+    assert res["Q"] == pytest.approx(expected_v * 1.0)
+
+
+# --- Précision de la recherche de cote ("Imposer Q") ---
+
+# Même canal que trapezoidal_section (fond de 3 m, 2 m de haut).
+SMALL_CHANNEL = [Point(x=0, z=2), Point(x=1, z=0), Point(x=4, z=0), Point(x=5, z=2)]
+# Grande rivière (fond de 60 m, 6 m de haut). À 5 m d'eau, 1 mm de cote ne change le débit
+# que de 0.03 % : la précision sur le débit seule laisserait la cote à 3 mm près.
+LARGE_RIVER = [Point(x=0, z=6), Point(x=10, z=0), Point(x=70, z=0), Point(x=80, z=6)]
+
+
+@pytest.mark.parametrize("points, water_z", [
+    (SMALL_CHANNEL, 0.016),
+    (SMALL_CHANNEL, 0.065),
+    (SMALL_CHANNEL, 1.0),
+    (LARGE_RIVER, 1.0),
+    (LARGE_RIVER, 5.0),
+], ids=["Q=0.003", "Q=0.03", "Q=2.5", "Q=57", "Q=860"])
+def test_imposed_q_finds_the_level_within_0_1_percent_of_q_and_1_mm(points, water_z):
+    """En injectant le débit d'une cote connue, la dichotomie retrouve cette cote à 1 mm
+    près et le débit à 0.1 % près, quel que soit le débit (l'ancienne tolérance absolue de
+    0.01 m³/s donnait -8 % d'erreur à 0.03 m³/s et +190 % à 0.003 m³/s)."""
+    section = CrossSection(name="test", points=points)
+    target = compute_hydraulic_params(section, water_z, slope=0.001, ks=30.0)["Q"]
+
+    res = find_water_level_for_discharge(section, target, slope=0.001, ks=30.0)
+
+    assert res["Q"] == pytest.approx(target, rel=1e-3)
+    assert res["water_z"] == pytest.approx(water_z, abs=1e-3)
+
+
+def test_imposed_zero_discharge_gives_no_water(trapezoidal_section):
+    res = find_water_level_for_discharge(trapezoidal_section, 0.0, slope=0.001, ks=30.0)
+
+    assert res["water_z"] == 0 and res["Q"] == 0 and res["S"] == 0
+
+
+# --- Profil projet : calcul par lits séparés ---
+
+# Lit emboîté simple, calculable à la main : fond de 2 m à z=0, talus 1/1 jusqu'aux
+# banquettes (z=0.5, X = -0.5 et 2.5), banquettes de 1 m, berges 1/1 jusqu'aux hauts de
+# berge (z=1.5, X = -2.5 et 4.5), lits majeurs de 2 m montant de 0.25 m/m (z=2 au bout).
+HAND_PARAMS = ProjectParameters(
+    bed_width=2.0, bed_depth=0.5, bed_side_slope=1.0,
+    berm_width_left=1.0, berm_width_right=1.0, berm_slope_left=0.0, berm_slope_right=0.0,
+    bank_slope_left=1.0, bank_width_left=1.0, bank_slope_right=1.0, bank_width_right=1.0,
+    floodplain_width_left=2.0, floodplain_width_right=2.0,
+    floodplain_slope_left=0.25, floodplain_slope_right=0.25,
+    anchor_x=0.0, anchor_z=0.0,
+)
+
+# Banquettes de 0.5 m à z=100.3, berges de 2 m de haut (hauts de berge à z=102.3), lits
+# majeurs de 5 m en pente douce (bouts à z=102.55, niveau maximal sans débordement).
+COMPOUND_PARAMS = ProjectParameters(
+    bed_width=2.0, bed_depth=0.3, bed_side_slope=1.5,
+    berm_width_left=0.5, berm_width_right=0.5, berm_slope_left=0.0, berm_slope_right=0.0,
+    bank_slope_left=1.0, bank_width_left=2.0, bank_slope_right=1.0, bank_width_right=2.0,
+    floodplain_width_left=5.0, floodplain_width_right=5.0,
+    floodplain_slope_left=0.05, floodplain_slope_right=0.05,
+    anchor_x=0.0, anchor_z=100.0,
+)
+
+
+def _strickler(area, perimeter, ks=30.0, slope=0.001):
+    return ks * area * (area / perimeter) ** (2 / 3) * math.sqrt(slope)
+
+
+def test_project_section_is_computed_part_by_part_as_by_hand():
+    """Eau à z=1.75 (0.25 m au-dessus des hauts de berge) : les 5 parties sont mouillées.
+    Chacune a sa surface et son périmètre, sans les verticales de découpage :
+    - lit majeur : triangle de 1 m sur 0.25 m, S = 0.125 m², P = √(1² + 0.25²) ;
+    - banquette + berge : banquette 1 m × 1.25 m + berge 1 m × (1.25 + 0.25) / 2, S = 2 m²,
+      P = 1 + √2 ;
+    - lit d'étiage : trapèze (2 + 3) / 2 × 0.5 + rectangle 3 × 1.25, S = 5 m², P = 2 + √2."""
+    section = build_project_cross_section(HAND_PARAMS)
+
+    res = compute_hydraulic_params(section, water_z=1.75, slope=0.001, ks=30.0)
+
+    floodplain, bank, main = (0.125, math.sqrt(1 + 0.25 ** 2)), (2.0, 1 + math.sqrt(2)), (5.0, 2 + math.sqrt(2))
+    expected = [("Lit majeur G", *floodplain), ("Banquette + berge G", *bank), ("Lit d'étiage", *main),
+                ("Banquette + berge D", *bank), ("Lit majeur D", *floodplain)]
+    assert [part["name"] for part in res["subsections"]] == [name for name, _, _ in expected]
+    for part, (_, area, perimeter) in zip(res["subsections"], expected):
+        assert part["S"] == pytest.approx(area)
+        assert part["P"] == pytest.approx(perimeter)
+        assert part["Q"] == pytest.approx(_strickler(area, perimeter))
+        assert part["V"] == pytest.approx(_strickler(area, perimeter) / area)
+    assert res["S"] == pytest.approx(9.25)
+    assert res["Q"] == pytest.approx(sum(_strickler(area, perimeter) for _, area, perimeter in expected))
+
+
+def test_project_discharge_always_increases_with_the_water_level():
+    """Au pas de 1 mm, du fond jusqu'au niveau maximal sans débordement, y compris au passage
+    des banquettes (z=100.3) et des hauts de berge (z=102.3). Calculé d'un seul bloc, le même
+    terrain voyait son débit chuter à ces deux passages (périmètre brutalement allongé)."""
+    section = build_project_cross_section(COMPOUND_PARAMS)
+    levels = [100.0 + k / 1000 for k in range(1, 2550)]
+
+    discharges = [compute_hydraulic_params(section, z, 0.005, 25.0)["Q"] for z in levels]
+
+    assert all(q2 > q1 for q1, q2 in zip(discharges, discharges[1:]))
+    one_block = CrossSection("Un seul bloc", section.points)
+    q_block = [compute_hydraulic_params(one_block, z, 0.005, 25.0)["Q"] for z in levels]
+    drops = [z for z, q1, q2 in zip(levels[1:], q_block, q_block[1:]) if q2 < q1]
+    assert drops[0] == pytest.approx(100.301) and drops[1] == pytest.approx(102.301)
+
+
+def test_imposed_q_finds_the_level_just_below_the_bank_top():
+    """Débit de l'eau à 5 cm sous les hauts de berge (z=102.25). Calculé d'un seul bloc, le
+    débit retombait sur le lit majeur à cette même valeur : la dichotomie y trouvait une cote
+    30 cm trop haute."""
+    section = build_project_cross_section(COMPOUND_PARAMS)
+    target = compute_hydraulic_params(section, 102.25, 0.005, 25.0)["Q"]
+
+    res = find_water_level_for_discharge(section, target, 0.005, 25.0)
+
+    assert res["water_z"] == pytest.approx(102.25, abs=1e-3)
+    assert res["Q"] == pytest.approx(target, rel=1e-3)
+    assert [part["name"] for part in res["subsections"]] == [
+        "Banquette + berge G", "Lit d'étiage", "Banquette + berge D"]
+
+
+def test_dry_or_missing_parts_are_ignored():
+    """Sans lit majeur, les verticales des hauts de berge tombent aux bouts du profil : elles
+    ne séparent rien et ne sont pas tracées. Sous les banquettes, seul le lit d'étiage est
+    mouillé."""
+    section = build_project_cross_section(replace(HAND_PARAMS, floodplain_width_left=0.0,
+                                                  floodplain_width_right=0.0))
+
+    below_berms = compute_hydraulic_params(section, 0.4, 0.001, 30.0)
+    above_berms = compute_hydraulic_params(section, 1.0, 0.001, 30.0)
+
+    assert [part["name"] for part in below_berms["subsections"]] == ["Lit d'étiage"]
+    assert [part["name"] for part in above_berms["subsections"]] == [
+        "Banquette + berge G", "Lit d'étiage", "Banquette + berge D"]
+    assert subsection_dividers(section) == [(-0.5, 0.5), (2.5, 0.5)]
+
+
+def test_division_applies_inside_the_flow_zone():
+    """Zone de X = 1 à X = 5 : le lit d'étiage est coupé par la limite gauche, le lit majeur D
+    par la limite droite (parois hors périmètre) ; les parties de gauche sont hors zone."""
+    section = build_project_cross_section(HAND_PARAMS)
+
+    res = compute_hydraulic_params(section, 1.75, 0.001, 30.0, bounds=(1.0, 5.0))
+
+    main, bank, floodplain = res["subsections"]
+    assert (main["name"], bank["name"], floodplain["name"]) == ("Lit d'étiage", "Banquette + berge D", "Lit majeur D")
+    # Fond plat de X = 1 à 2 (1.75 m d'eau), puis talus jusqu'à la banquette (1.75 → 1.25 m).
+    assert main["S"] == pytest.approx(1.0 * 1.75 + 0.5 * (1.75 + 1.25) / 2)
+    assert main["P"] == pytest.approx(1.0 + 0.5 * math.sqrt(2))
+    assert bank["S"] == pytest.approx(2.0)
+    # Lit majeur de X = 4.5 (0.25 m d'eau) à la paroi X = 5 (0.125 m).
+    assert floodplain["S"] == pytest.approx(0.5 * (0.25 + 0.125) / 2)
+    assert floodplain["P"] == pytest.approx(math.hypot(0.5, 0.125))
+    assert subsection_dividers(section, (1.0, 5.0)) == [(2.5, 0.5), (4.5, 1.5)]
 
 
 class TestResolveHydraulicResult:
@@ -285,8 +481,9 @@ class TestResolveHydraulicResult:
 
     def test_reported_reproduction_case_gives_correct_depth_not_stale_h_eau(self):
         """Cas de reproduction exact du rapport de bug : cible Q=8.00 m³/s doit donner un
-        tirant d'eau proche de 0.93 m — jamais 0.54 m (l'ancien h_eau d'un précédent passage
-        en mode "Imposer H")."""
+        tirant d'eau proche de 0.87 m — jamais 0.54 m (l'ancien h_eau d'un précédent passage
+        en mode "Imposer H"). L'eau dépasse le haut du lit d'étiage : calculée en lits séparés
+        (lit d'étiage et berges), la section débite plus qu'en un seul bloc (0.93 m avant)."""
         section, anchor_z = self._reproduction_section()
 
         res = resolve_hydraulic_result(
@@ -296,11 +493,11 @@ class TestResolveHydraulicResult:
         )
 
         h = res["water_z"] - anchor_z
-        assert h == pytest.approx(0.93, abs=0.02)
+        assert h == pytest.approx(0.87, abs=0.02)
         assert h != pytest.approx(0.54, abs=0.05)
-        assert res["V"] == pytest.approx(3.71, abs=0.05)
-        assert res["S"] == pytest.approx(2.15, abs=0.05)
-        assert res["Q"] == pytest.approx(8.00, abs=0.01)
+        assert res["V"] == pytest.approx(4.12, abs=0.05)
+        assert res["S"] == pytest.approx(1.94, abs=0.05)
+        assert res["Q"] == pytest.approx(8.00, rel=1e-3)
 
     def test_switching_calc_mode_recomputes_from_scratch(self):
         """Basculer de "Imposer H" à "Imposer Q" (même section) doit changer le résultat en
@@ -319,7 +516,7 @@ class TestResolveHydraulicResult:
         )
 
         assert res_impose_h["water_z"] - anchor_z == pytest.approx(0.54)
-        assert res_impose_q["water_z"] - anchor_z == pytest.approx(0.93, abs=0.02)
+        assert res_impose_q["water_z"] - anchor_z == pytest.approx(0.87, abs=0.02)
         assert res_impose_h["water_z"] != res_impose_q["water_z"]
 
     def test_changing_q_target_alone_recomputes_result(self):
@@ -338,8 +535,8 @@ class TestResolveHydraulicResult:
 
         assert res_q8["water_z"] != res_q12["water_z"]
         assert res_q12["water_z"] > res_q8["water_z"]  # plus de débit -> tirant d'eau plus grand
-        assert res_q8["Q"] == pytest.approx(8.00, abs=0.01)
-        assert res_q12["Q"] == pytest.approx(12.00, abs=0.01)
+        assert res_q8["Q"] == pytest.approx(8.00, rel=1e-3)
+        assert res_q12["Q"] == pytest.approx(12.00, rel=1e-3)
 
     def test_changing_profile_geometry_recomputes_result(self):
         """Changer de profil (section différente), en restant dans le même mode et avec le
@@ -397,11 +594,103 @@ def test_hydraulics_figure_draws_one_water_segment_per_bed():
 
 
 def _dashed_lines_x(fig):
-    return sorted(sh.x0 for sh in fig.layout.shapes if sh.type == "line")
+    """Limites de la zone d'écoulement (tirets)."""
+    return sorted(sh.x0 for sh in fig.layout.shapes if sh.type == "line" and sh.line.dash == "dash")
+
+
+def _dotted_lines_x(fig):
+    """Verticales de découpage de la section en lits (pointillés)."""
+    return sorted(sh.x0 for sh in fig.layout.shapes if sh.type == "line" and sh.line.dash == "dot")
 
 
 def _greyed_out(fig):
     return sorted((sh.x0, sh.x1) for sh in fig.layout.shapes if sh.type == "rect")
+
+
+def _project_figure(params, **hydro):
+    from core.controller import ProfileController, ViewMode
+    data = {**asdict(params), "hydro_source": "project", "slope": 0.001, "ks_pro": 30.0, **hydro}
+    return ProfileController().build_figure([], data, ViewMode.HYDRAULICS)
+
+
+def test_project_hydraulics_draws_the_dividers_and_details_each_wet_part():
+    """Eau à 1.75 m au-dessus du fond (cf. HAND_PARAMS) : les 4 verticales sont tracées en
+    pointillés, du terrain jusqu'au haut du profil (z=2, bouts des lits majeurs), et
+    l'encadré donne le débit et la vitesse de chacune des 5 parties."""
+    fig = _project_figure(HAND_PARAMS, calc_mode="Q_FROM_H", h_eau=1.75)
+
+    dotted = sorted((sh.x0, sh.y0, sh.y1) for sh in fig.layout.shapes if sh.line.dash == "dot")
+    assert dotted == [(-2.5, 1.5, 2.0), (-0.5, 0.5, 2.0), (2.5, 0.5, 2.0), (4.5, 1.5, 2.0)]
+    results = _results_text(fig)
+    assert "<b>Détail par partie mouillée :</b>" in results
+    res = compute_hydraulic_params(build_project_cross_section(HAND_PARAMS), 1.75, 0.001, 30.0)
+    for part in res["subsections"]:
+        share = 100 * part["Q"] / res["Q"]
+        assert (f"• {part['name']} : {format_discharge(part['Q'])} m³/s ({share:.0f} %), "
+                f"V = {part['V']:.2f} m/s") in results
+
+
+def test_project_hydraulics_draws_only_the_dividers_inside_the_flow_zone():
+    fig = _project_figure(HAND_PARAMS, calc_mode="Q_FROM_H", h_eau=1.75,
+                          hydro_zone="custom", hydro_x_left=1.0, hydro_x_right=5.0)
+
+    assert _dotted_lines_x(fig) == [2.5, 4.5]
+    assert _dashed_lines_x(fig) == [1.0, 5.0]
+
+
+def test_dividers_stand_out_from_the_grid_but_stay_lighter_than_the_profile_and_water_line():
+    """Pointillés tracés par-dessus la grille mais sous les courbes, plus foncés que la
+    grille et plus fins que le profil et la ligne d'eau."""
+    from viz.plots import GRID_COLOR
+    fig = _project_figure(HAND_PARAMS, calc_mode="Q_FROM_H", h_eau=1.75)
+    profile = next(t for t in fig.data if t.name == "Projet")
+    water = _water_trace(fig)
+
+    def luminance(hex_color):
+        return sum(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+
+    dividers = [sh for sh in fig.layout.shapes if sh.type == "line" and sh.line.dash == "dot"]
+    assert len(dividers) == 4
+    for divider in dividers:
+        assert divider.layer == "between"
+        assert luminance(divider.line.color) < luminance(GRID_COLOR)
+        assert divider.line.width < min(profile.line.width, water.line.width)
+
+
+@pytest.mark.parametrize("hydro", [
+    dict(),
+    dict(hydro_zone="custom", hydro_x_left=1.0, hydro_x_right=5.0),
+])
+def test_shapes_between_grid_and_traces_are_tied_to_the_axes(hydro):
+    """Plotly.js 4.1 ne sait pas dessiner une forme "between" rattachée au domaine ou au
+    papier (ex. add_vline, yref "y domain") : il n'en trouve pas le calque et tout le
+    graphique échoue ("Cannot read properties of undefined (reading 'append')")."""
+    fig = _project_figure(HAND_PARAMS, calc_mode="Q_FROM_H", h_eau=1.75, **hydro)
+
+    between = [sh for sh in fig.layout.shapes if sh.layer == "between"]
+    assert between
+    for shape in between:
+        assert (shape.xref, shape.yref) == ("x", "y")
+
+
+def test_project_overflow_is_still_reported_without_part_detail():
+    """Sans lit majeur, l'eau au-dessus des hauts de berge (z=1.5) déborde hors du profil :
+    signalé, débit non calculé, comme avant le découpage."""
+    params = replace(HAND_PARAMS, floodplain_width_left=0.0, floodplain_width_right=0.0)
+
+    fig = _project_figure(params, calc_mode="Q_FROM_H", h_eau=1.75)
+
+    assert "Débordement" in _overflow_warning_text(fig)
+    results = _results_text(fig)
+    assert "Débit (Q) : non calculable (débordement)" in results
+    assert "Détail par partie" not in results
+
+
+def test_existing_profile_is_not_divided():
+    fig = _hydraulics_figure()
+
+    assert _dotted_lines_x(fig) == []
+    assert "Détail par partie" not in _results_text(fig)
 
 
 def test_hydraulics_figure_between_two_x_draws_only_that_zone_and_greys_the_rest():
@@ -622,6 +911,64 @@ def test_imposed_q_beyond_capacity_shows_a_warning():
 ])
 def test_no_warning_when_the_water_stays_inside_the_profile(hydro):
     assert _overflow_warning_text(_figure(LOW_RIGHT_END, **hydro)) is None
+
+
+# Débit cible juste au-dessus de la capacité d'un petit fossé (≈ 0.03 m³/s) et d'une grande
+# rivière (≈ 1170 m³/s) : le débit "Saisi" et l'avertissement "débit cible non atteint"
+# suivent la même règle relative que la recherche de cote (0.1 % du débit cible).
+SMALL_DITCH = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(0, 0.4), (0.2, 0), (0.7, 0), (0.9, 0.2)]]
+LARGE_RIVER_ROWS = [{"X (m)": p.x, "Z (m NGF)": p.z} for p in LARGE_RIVER]
+
+
+def _capacity(rows):
+    section = CrossSection("s", [Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in rows])
+    return compute_hydraulic_params(section, overflow_level(section), 0.001, 30.0)["Q"]
+
+
+@pytest.mark.parametrize("rows", [SMALL_DITCH, LARGE_RIVER_ROWS], ids=["petit_debit", "grand_debit"])
+def test_target_0_05_percent_above_the_capacity_is_reached(rows):
+    """Atteint, même pour un grand débit (l'ancienne tolérance absolue de 0.01 m³/s le
+    déclarait non atteint à 1170 m³/s)."""
+    fig = _figure(rows, calc_mode="H_FROM_Q", q_target=_capacity(rows) * 1.0005)
+
+    assert "m³/s <i>[Saisi]</i>" in _results_text(fig)
+    assert _overflow_warning_text(fig) is None
+
+
+@pytest.mark.parametrize("rows", [SMALL_DITCH, LARGE_RIVER_ROWS], ids=["petit_debit", "grand_debit"])
+def test_target_1_percent_above_the_capacity_is_not_reached(rows):
+    """Non atteint, même pour un petit débit (l'ancienne tolérance absolue de 0.01 m³/s le
+    déclarait atteint à 0.03 m³/s)."""
+    target = _capacity(rows) * 1.01
+
+    fig = _figure(rows, calc_mode="H_FROM_Q", q_target=target)
+
+    assert f"(cible {format_discharge(target)} m³/s non atteinte)" in _results_text(fig)
+    assert "Débit cible non atteint" in _overflow_warning_text(fig)
+
+
+def test_small_discharges_are_shown_with_3_significant_digits():
+    """Petit fossé (capacité 0.0315 m³/s), cible 1 % au-dessus : avec 2 décimales, résultats
+    et avertissement afficheraient 0.03 m³/s demandés comme calculés."""
+    fig = _figure(SMALL_DITCH, calc_mode="H_FROM_Q", q_target=_capacity(SMALL_DITCH) * 1.01)
+
+    assert "0.0315 m³/s (cible 0.0318 m³/s non atteinte)" in _results_text(fig)
+    warning = _overflow_warning_text(fig)
+    assert "0.0318 m³/s demandés, 0.0315 m³/s calculés" in warning
+    assert "Capacité maximale sans débordement : Q = 0.0315 m³/s" in warning
+
+
+@pytest.mark.parametrize("q, text", [
+    (0.001, "0.00100"),
+    (0.0318, "0.0318"),
+    (0.12345, "0.123"),
+    (0.5, "0.500"),
+    (0.0, "0.00"),
+    (7.943, "7.94"),
+    (1171.4, "1171.40"),
+])
+def test_format_discharge_keeps_3_significant_digits_below_1_m3_per_s(q, text):
+    assert format_discharge(q) == text
 
 
 def test_water_exactly_at_a_profile_end_despite_rounding_is_not_an_overflow():

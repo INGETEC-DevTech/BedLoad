@@ -15,7 +15,9 @@ Les formules ci-dessous ont été validées contre les valeurs réelles de la
 feuille CT1 du classeur hydrotopo_v_1_5_1.xlsx.
 """
 
-from core.models import CrossSection, Point, ProjectParameters
+import math
+
+from core.models import CrossSection, Point, ProjectParameters, Subsection
 
 
 def build_project_cross_section(params: ProjectParameters, name: str = "Profil projet") -> CrossSection:
@@ -118,4 +120,14 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
     if raccord_d is not None:
         points.append(raccord_d)
 
-    return CrossSection(name=name, points=points)
+    # Découpage hydraulique par 4 verticales, aux hauts du lit d'étiage (banquettes) et aux
+    # hauts de berge : chaque partie est calculée comme un lit à part. Une partie sans
+    # terrain (pas de lit majeur ni de raccord) ou hors d'eau est ignorée par le calcul.
+    subsections = [
+        Subsection("Lit majeur G", -math.inf, hdbg.x, floodplain=True),
+        Subsection("Banquette + berge G", hdbg.x, banq1.x),
+        Subsection("Lit d'étiage", banq1.x, banq2.x),
+        Subsection("Banquette + berge D", banq2.x, hdbd.x),
+        Subsection("Lit majeur D", hdbd.x, math.inf, floodplain=True),
+    ]
+    return CrossSection(name=name, points=points, subsections=subsections)

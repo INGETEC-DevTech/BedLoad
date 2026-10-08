@@ -82,6 +82,17 @@ def test_profile_without_zone_settings_resets_to_defaults(form):
     assert (data["hydro_zone"], data["hydro_arm_split_x"]) == ("all", 0.0)
 
 
+@pytest.mark.parametrize("entered, kept", [
+    (0.025, 0.025),   # 3 décimales : n'est plus arrondi à 0.03
+    (0.001, 0.001),   # 1 L/s, le minimum
+    (0.0004, 0.001),  # sous le minimum : ramené à 1 L/s
+])
+def test_target_discharge_accepts_down_to_1_litre_per_second_with_3_decimals(form, entered, kept):
+    form.set_data({"calc_mode": "H_FROM_Q", "q_target": entered})
+
+    assert form.get_data()["q_target"] == pytest.approx(kept)
+
+
 def test_pick_dialog_preselects_the_crest_and_sets_the_separation(form, monkeypatch):
     seen = {}
 

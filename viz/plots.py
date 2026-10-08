@@ -19,6 +19,8 @@ EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
 HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
 CALC_BOUND_COLOR = "#6c757d" # gris : limites du lit de calcul hydraulique
+DIVIDER_COLOR = "#6c757d"    # gris moyen : verticales de découpage de la section en lits
+DIVIDER_WIDTH = 1.5          # plus fin que les profils et la ligne d'eau (2)
 STATION_COLOR = "#ced4da"       # gris clair : position des profils en travers (profil en long)
 STATION_LABEL_COLOR = "#495057" # gris foncé : nom de ces profils
 CUT_COLOR = "#d62728"        # rouge : déblai (terrain existant à enlever)
@@ -124,6 +126,22 @@ def _add_water(fig: go.Figure, water_level: Optional[float],
             )
 
 
+def _add_dividers(fig: go.Figure, dividers: Optional[List[Tuple[float, float]]], z_top: float) -> None:
+    """Verticales de découpage de la section en lits calculés séparément (cf.
+    core.hydraulics.subsection_dividers), en pointillés, du terrain jusqu'à `z_top` (haut des
+    profils et de la ligne d'eau). Tracées entre la grille et les courbes ("between") :
+    par-dessus la grille, qui les masquait en partie, mais sous les profils et la ligne d'eau,
+    qui restent prioritaires.
+
+    En coordonnées du graphique (yref "y"), pas sur toute la hauteur comme add_vline (yref
+    "y domain") : Plotly.js 4.1 ne trouve pas le calque "between" d'une forme rattachée au
+    domaine, et tout le graphique échoue ("Cannot read properties of undefined (reading
+    'append')")."""
+    for x, z_bottom in dividers or []:
+        fig.add_shape(type="line", xref="x", yref="y", x0=x, x1=x, y0=z_bottom, y1=z_top,
+                      line=dict(color=DIVIDER_COLOR, width=DIVIDER_WIDTH, dash="dot"), layer="between")
+
+
 def _centroid(xs: List[float], zs: List[float]) -> Tuple[float, float]:
     """Centre de gravité d'un polygone fermé (formule de l'aire signée), pour placer
     l'étiquette d'une zone à l'intérieur de celle-ci ; moyenne des sommets en repli si le
@@ -202,8 +220,10 @@ def plot_single_profile(
     water_level: float = None,
     water_intervals: Optional[List[Tuple[float, float]]] = None,
     calc_bounds: Optional[Tuple[float, float]] = None,
+    dividers: Optional[List[Tuple[float, float]]] = None,
 ) -> go.Figure:
-    """Graphique d'un seul profil (existant seul, ou projet seul) avec ligne d'eau optionnelle."""
+    """Graphique d'un seul profil (existant seul, ou projet seul) avec ligne d'eau optionnelle
+    et, pour le calcul hydraulique, les verticales de découpage en lits (`dividers`)."""
     xs, zs = section.to_arrays()
     fig = go.Figure()
     
@@ -218,15 +238,17 @@ def plot_single_profile(
         )
     )
     
-    _add_water(fig, water_level, water_intervals, calc_bounds, (min(xs), max(xs)))
-
-    fig = _apply_common_layout(fig, section.name)
-        
-    # On applique la même logique de cadre strict (+ 1 mètre de marge), ligne d'eau comprise :
-    # en cas de débordement, elle passe au-dessus du point le plus haut du profil.
+    # Cadre strict (+ 1 mètre de marge, cf. plus bas), ligne d'eau comprise : en cas de
+    # débordement, elle passe au-dessus du point le plus haut du profil.
     frame_zs = list(zs)
     if water_level is not None and water_intervals:
         frame_zs.append(water_level)
+
+    _add_water(fig, water_level, water_intervals, calc_bounds, (min(xs), max(xs)))
+    _add_dividers(fig, dividers, max(frame_zs))
+
+    fig = _apply_common_layout(fig, section.name)
+
     fig.update_xaxes(range=[min(xs) - 1, max(xs) + 1])
     fig.update_yaxes(range=[min(frame_zs) - 1, max(frame_zs) + 1])
     
@@ -241,9 +263,11 @@ def plot_overlay(
     calc_bounds: Optional[Tuple[float, float]] = None,
     earthworks: Optional[EarthworksResult] = None,
     frame_all: bool = False,
+    dividers: Optional[List[Tuple[float, float]]] = None,
 ) -> go.Figure:
     """Graphique de comparaison : les deux profils superposés, avec ligne d'eau optionnelle
-    et, si `earthworks` est fourni, les zones de déblai/remblai entre les deux.
+    et, si `earthworks` est fourni, les zones de déblai/remblai entre les deux. `dividers` :
+    verticales de découpage en lits du profil calculé (onglet Hydraulique).
 
     Cadrage par défaut : sur le seul profil projet (onglet Profil projet, où le projet est
     l'objet de la saisie), ou, avec `frame_all`, sur les deux profils en entier et la ligne
@@ -280,6 +304,8 @@ def plot_overlay(
 
     all_xs = list(xs_e) + list(xs_p)
     _add_water(fig, water_level, water_intervals, calc_bounds, (min(all_xs), max(all_xs)))
+    has_water = water_level is not None and water_intervals
+    _add_dividers(fig, dividers, max(list(zs_e) + list(zs_p) + ([water_level] if has_water else [])))
 
     fig = _apply_common_layout(fig, f"{existing.name} vs {project.name}")
     if earthworks is not None:

@@ -12,10 +12,24 @@ class Point:
     label: str = field(default="", compare=False)
 
 @dataclass
+class Subsection:
+    """Partie de la section comprise entre deux verticales de découpage (X de x_min à x_max,
+    infinis aux deux bouts), calculée comme un lit à part (cf. core.hydraulics). `floodplain`
+    distingue le lit majeur du lit mineur : c'est sur lui que s'appuieront un Ks propre au
+    lit majeur et la méthode de Debord."""
+    name: str
+    x_min: float
+    x_max: float
+    floodplain: bool = False
+
+@dataclass
 class CrossSection:
-    """Un profil en travers : un nom + une liste de points ordonnés par X."""
+    """Un profil en travers : un nom + une liste de points ordonnés par X. `subsections`
+    découpe la section pour le calcul hydraulique (profil projet : lit d'étiage, banquettes
+    et berges, lits majeurs) ; vide, chaque lit mouillé est calculé d'un seul bloc."""
     name: str
     points: List[Point] = field(default_factory=list)
+    subsections: List[Subsection] = field(default_factory=list)
 
     def to_arrays(self) -> Tuple[List[float], List[float]]:
         """Retourne (liste des X, liste des Z), pratique pour tracer un graphique."""
@@ -89,16 +103,31 @@ class ProjectParameters:
     connect_z_right: Optional[float] = None
 
 
+def _entered_right_to_left(xs: pd.Series) -> bool:
+    """Le profil a-t-il été saisi de droite à gauche, c'est-à-dire avec des X globalement
+    décroissants : plus de pas descendants que montants d'une ligne à la suivante ? Compter
+    les pas, plutôt que comparer le premier et le dernier X, ne se laisse pas tromper par un
+    point de plateau gauche ajouté en fin de tableau."""
+    steps = pd.to_numeric(xs, errors="coerce").diff().dropna()
+    return (steps < 0).sum() > (steps > 0).sum()
+
+
 def dataframe_to_points(df: pd.DataFrame) -> List[Point]:
-    """Convertit un tableau (2 colonnes : X, Z) en liste de Point."""
+    """Convertit un tableau (2 colonnes : X, Z) en liste de Point, triés par X. À X égal
+    (berge verticale), l'ordre de saisie est conservé, dans le sens du levé : un profil
+    saisi de droite à gauche est d'abord retourné (cf. _entered_right_to_left)."""
     if df is None or df.empty:
         return []
     clean = df.dropna(how="any")
     if clean.empty:
         return []
-    
+
     x_col, z_col = clean.columns[0], clean.columns[1]
-    clean = clean.sort_values(by=x_col)
+    if _entered_right_to_left(clean[x_col]):
+        clean = clean.iloc[::-1]
+    # Tri stable : le tri par défaut (quicksort) peut inverser deux points de même X, et
+    # donc retourner une berge verticale.
+    clean = clean.sort_values(by=x_col, kind="stable")
     points: List[Point] = []
     
     for _, row in clean.iterrows():
