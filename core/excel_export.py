@@ -113,23 +113,26 @@ def export_project_profile(path, project_params: Dict[str, Any],
 
 # Colonnes du tableau du profil en long : (titre, largeur).
 _LONGITUDINAL_COLUMNS = (
-    ("Nom", 28), ("Distance (m)", 14), ("Z existant", 14), ("Z projet", 14), ("Z point dur", 14),
+    ("Nom", 28), ("Distance existante (m)", 14), ("Distance projet (m)", 14),
+    ("Z existant", 14), ("Z projet", 14), ("Z point dur existant", 14), ("Z point dur projet", 14),
 )
 
 
 def export_longitudinal_profile(path, profile: LongitudinalProfile) -> None:
     """Écrit dans `path` le profil en long tel que le graphique l'affiche (cf.
     core.longitudinal.longitudinal_table) : une seule feuille, un seul tableau Excel
-    (filtrable), une ligne par profil en travers et par point dur, triées par distance. Une
-    cote absente laisse la case vide. Lève OSError si le fichier ne peut pas être écrit
-    (ex. déjà ouvert dans Excel)."""
+    (filtrable), une ligne par profil en travers (ses deux distances) et par point dur (la
+    distance et la cote de sa famille), dans l'ordre de longitudinal_table. Une valeur
+    absente laisse la case vide. Lève OSError si le fichier ne peut pas être écrit (ex.
+    déjà ouvert dans Excel)."""
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Profil en long"
     sheet.append([title for title, _ in _LONGITUDINAL_COLUMNS])
     rows = longitudinal_table(profile)
     for row in rows:
-        sheet.append([row.name, row.distance, row.z_existing, row.z_project, row.z_hard_point])
+        sheet.append([row.name, row.distance, row.project_distance, row.z_existing, row.z_project,
+                      row.z_hard_point, row.z_project_hard_point])
         for cell in sheet[sheet.max_row][1:]:
             cell.number_format = _NUMBER_FORMAT
 

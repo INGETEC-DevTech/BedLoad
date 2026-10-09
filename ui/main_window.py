@@ -21,6 +21,7 @@ from ui.views.project_summary_view import ProjectSummaryView
 from ui import theme
 
 from core.controller import ProfileController
+from core.hard_points import EXISTING, FAMILY_SINGULARS, PROJECT
 from viz.figures import ViewMode, build_figure, build_longitudinal_figure
 
 class MainWindow(QMainWindow):
@@ -208,6 +209,10 @@ class MainWindow(QMainWindow):
         self.form_hydraulics.data_changed.connect(self.save_and_update_plot)
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.form_project.export_excel_requested.connect(self.export_project_excel)
+        self.form_existing.distance_field.distance_edited.connect(
+            lambda distance: self._set_profile_distance(distance, EXISTING))
+        self.form_project.distance_field.distance_edited.connect(
+            lambda distance: self._set_profile_distance(distance, PROJECT))
         self.plot_view.expand_toggled.connect(self.toggle_plot_expanded)
         self.plot_view.orthonormal_toggled.connect(self._save_longitudinal_orthonormal)
         self.plot_view.excel_export_requested.connect(self.export_longitudinal_excel)
@@ -414,8 +419,48 @@ class MainWindow(QMainWindow):
             self.form_hydraulics.set_slope_info(self.db_manager.profile_slope_info(row_id))
         else:
             self.form_hydraulics.set_slope_info(None, is_draft=True)
+        self._show_profile_distances(target)
 
         self.update_plot()
+
+    def _distance_fields(self):
+        return ((EXISTING, self.form_existing.distance_field), (PROJECT, self.form_project.distance_field))
+
+    def _show_profile_distances(self, target):
+        """Distances existante et projet du profil ouvert, en haut des onglets Profil
+        existant et Profil projet, bornées par la zone de chaque famille de points durs.
+        Un brouillon n'a pas de distance : les champs sont masqués."""
+        kind, row_id = target
+        distances = self.db_manager.get_profile_distances(row_id) if kind == "profile" else None
+        project_id = self.db_manager.get_profile_project_id(row_id) if distances else None
+        for (family, field), distance in zip(self._distance_fields(), distances or (None, None)):
+            field.setVisible(distances is not None)
+            if distances is None:
+                continue
+            points = [p for p in self.db_manager.get_hard_points(project_id, family)
+                      if p["pk"] is not None and p["z"] is not None]
+            reference = f"au premier {FAMILY_SINGULARS[family]}"
+            if points and points[0]["name"]:
+                reference += f" « {points[0]['name']} »"
+            field.set_distance(distance, self.db_manager.get_distance_zone(project_id, family), reference)
+
+    def _set_profile_distance(self, distance: float, family: str):
+        """Distance existante ou projet du profil ouvert modifiée en haut de son onglet :
+        enregistrée (l'arbre reste trié par distance existante), puis le profil est
+        rechargé, sa pente calculée ayant pu changer. Refusée (hors zone, distance
+        existante déjà prise), elle est signalée et la valeur enregistrée rétablie."""
+        if self._current_target is None or self._current_target[0] != "profile":
+            return
+        try:
+            report = self.db_manager.set_profile_distance(self._current_target[1], distance, family)
+        except ValueError as e:
+            QMessageBox.warning(self, "Distance refusée", str(e))
+            self._show_profile_distances(self._current_target)
+            return
+        self.sidebar.refresh_tree()
+        if report.switched_to_imposed:
+            QMessageBox.information(self, "Pentes hydrauliques", report.message())
+        self._open_editor(self._current_target)
 
     def load_scenario_longitudinal(self, scenario_id: int):
         """Clic sur un scénario : bascule la vue centrale vers le profil en long agrégé de

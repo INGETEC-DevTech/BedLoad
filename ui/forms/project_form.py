@@ -8,6 +8,7 @@ from core.geometry import CONNECT_POINT_ERRORS, invalid_connect_side
 from core.models import ProjectParameters
 from ui import theme
 from ui.dialogs.point_picker_dialog import PointPickerDialog
+from ui.forms.distance_field import DistanceField
 
 class ProjectProfileForm(QWidget):
     data_changed = pyqtSignal(dict)
@@ -42,6 +43,10 @@ class ProjectProfileForm(QWidget):
         # (cf. on_value_changed) : permet d'annuler une saisie qui rendrait un raccord
         # existant invalide, en revenant à la valeur juste avant.
         self._last_valid_values = None
+
+        # Position du profil le long du lit projet (masquée pour un brouillon).
+        self.distance_field = DistanceField("Distance projet (m) :")
+        self.main_layout.addWidget(self.distance_field)
 
         self._setup_geo_tab()
         self._last_valid_values = {key: sb.value() for key, sb in self.inputs.items()}

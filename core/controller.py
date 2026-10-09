@@ -18,7 +18,7 @@ from core.geometry import build_project_cross_section
 from core.models import CrossSection, ProjectParameters, dataframe_to_points
 from core.hydraulics import (clip_to_bounds, compute_hydraulic_params, free_end_levels,
                              overflow_level, resolve_hydraulic_result, target_discharge_reached)
-from core.hard_points import HardPoint, complete_points
+from core.hard_points import EXISTING, PROJECT, HardPoint, complete_points, of_family
 from core.longitudinal import StationEarthworks, build_longitudinal_profile
 from core.project_summary import ProjectSummary, ScenarioSummary, earthwork_volumes
 
@@ -264,13 +264,18 @@ class ProfileController:
 
     def project_summary(self, name: str, hard_points: List[Dict[str, Any]],
                         scenarios: List[Tuple[int, str, List[Dict[str, Any]]]]) -> ProjectSummary:
-        """Récapitulatif d'un projet : ses points durs et tronçons, et une ligne par
-        scénario ((id, nom, états de ses profils), dans l'ordre d'affichage)."""
+        """Récapitulatif d'un projet : ses deux familles de points durs (existants, projet)
+        et leurs tronçons, et une ligne par scénario ((id, nom, états de ses profils), dans
+        l'ordre d'affichage)."""
+        points = [HardPoint.from_dict(p) for p in hard_points or []]
+        markers = build_longitudinal_profile([], hard_points)
         return ProjectSummary(
             name=name,
             scenarios=[self.scenario_summary(sid, sname, states) for sid, sname, states in scenarios],
-            hard_points=complete_points(HardPoint.from_dict(p) for p in hard_points or []),
-            segments=build_longitudinal_profile([], hard_points).segments,
+            hard_points=complete_points(of_family(points, EXISTING)),
+            segments=markers.segments,
+            project_hard_points=complete_points(of_family(points, PROJECT)),
+            project_segments=markers.project_segments,
         )
 
     def to_cross_section(self, raw_data: List[Dict[str, Any]], name: str, allow_empty: bool = False) -> Optional[CrossSection]:

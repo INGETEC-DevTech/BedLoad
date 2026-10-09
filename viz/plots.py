@@ -17,7 +17,8 @@ from core.longitudinal import LongitudinalProfile, StationEarthworks
 
 EXISTING_COLOR = "#2ca02c"   # vert : profil existant
 PROJECT_COLOR = "#9467bd"    # violet : profil projet
-HARD_POINT_COLOR = "#d62728" # rouge : points durs (repères de terrain fixes)
+HARD_POINT_COLOR = "#d62728" # rouge : points durs existants (repères de terrain fixes)
+PROJECT_HARD_POINT_COLOR = "#8c564b"  # brun : points durs projet (le long du nouveau lit)
 CALC_BOUND_COLOR = "#6c757d" # gris : limites du lit de calcul hydraulique
 DIVIDER_COLOR = "#6c757d"    # gris moyen : verticales de découpage de la section en lits
 DIVIDER_WIDTH = 1.5          # plus fin que les profils et la ligne d'eau (2)
@@ -391,9 +392,50 @@ def _add_station_earthworks(fig: go.Figure, profile: LongitudinalProfile) -> Non
         )
 
 
+def _add_hard_point_family(fig: go.Figure, markers, segments, kind: str, color: str,
+                           symbol: str, dash: str, label_position: str) -> None:
+    """Une famille de points durs (`kind` : "existants" ou "projet") : reliés par un trait
+    qui matérialise les tronçons de pente (pente affichée en m/m, comme dans l'onglet
+    Hydraulique), et chacun identifié par son nom près de son marqueur. Les noms et les
+    pentes des deux familles sont placés de part et d'autre, pour ne pas se superposer
+    quand un même ouvrage est dans les deux lits."""
+    if segments:
+        fig.add_trace(
+            go.Scatter(
+                x=[m.distance for m in markers], y=[m.z for m in markers],
+                mode="lines", name=f"Tronçons entre points durs {kind}",
+                line=dict(color=color, width=1.5, dash=dash),
+                hoverinfo="skip",
+            )
+        )
+        for segment in segments:
+            fig.add_annotation(
+                x=(segment.start.distance + segment.end.distance) / 2,
+                y=(segment.start.z + segment.end.z) / 2,
+                text=f"I = {format_slope(segment.slope)}",
+                showarrow=False, yshift=12 if label_position.startswith("top") else -12,
+                font=dict(size=11, color=color),
+                bgcolor="rgba(255, 255, 255, 0.85)",
+            )
+    if markers:
+        fig.add_trace(
+            go.Scatter(
+                x=[m.distance for m in markers], y=[m.z for m in markers],
+                mode="markers+text", name=f"Points durs {kind}",
+                text=[m.name for m in markers],
+                textposition=label_position,
+                textfont=dict(size=11, color=color),
+                marker=dict(size=13 if symbol == "diamond" else 11, symbol=symbol, color=color,
+                            line=dict(width=1, color="#ffffff")),
+            )
+        )
+
+
 def plot_longitudinal_profile(profile: LongitudinalProfile, orthonormal: bool = False) -> go.Figure:
-    """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
-    (anchor_z), chacun tracé en fonction de la distance au premier point dur. Contrairement
+    """Profil en long d'un projet : TN existant (thalweg relevé), tracé à la distance
+    existante de chaque profil (au premier point dur existant), et fond de lit projet
+    (anchor_z), à sa distance projet (au premier point dur projet), avec les deux familles
+    de points durs. Les profils en travers sont repérés à leur distance existante. Contrairement
     aux coupes transversales, les axes ne sont par défaut PAS orthonormés (cette distance
     s'étend typiquement sur des centaines de mètres pour quelques mètres d'altitude) ;
     `orthonormal` (case « Échelle orthonormée » du graphique) les rend orthonormés."""
@@ -436,43 +478,18 @@ def plot_longitudinal_profile(profile: LongitudinalProfile, orthonormal: bool = 
 
     _add_station_earthworks(fig, profile)
 
-    # Points durs (repères de terrain fixes) : reliés par un trait pointillé qui matérialise
-    # les tronçons de pente (pente affichée en m/m, comme dans l'onglet Hydraulique), et
-    # chacun identifié par son nom au-dessus de son marqueur.
-    if profile.segments:
-        fig.add_trace(
-            go.Scatter(
-                x=[m.distance for m in profile.hard_points], y=[m.z for m in profile.hard_points],
-                mode="lines", name="Tronçons entre points durs",
-                line=dict(color=HARD_POINT_COLOR, width=1.5, dash="dot"),
-                hoverinfo="skip",
-            )
-        )
-        for segment in profile.segments:
-            fig.add_annotation(
-                x=(segment.start.distance + segment.end.distance) / 2,
-                y=(segment.start.z + segment.end.z) / 2,
-                text=f"I = {format_slope(segment.slope)}",
-                showarrow=False, yshift=12,
-                font=dict(size=11, color=HARD_POINT_COLOR),
-                bgcolor="rgba(255, 255, 255, 0.85)",
-            )
-    if profile.hard_points:
-        fig.add_trace(
-            go.Scatter(
-                x=[m.distance for m in profile.hard_points], y=[m.z for m in profile.hard_points],
-                mode="markers+text", name="Points durs",
-                text=[m.name for m in profile.hard_points],
-                textposition="top center",
-                textfont=dict(size=11, color=HARD_POINT_COLOR),
-                marker=dict(size=13, symbol="diamond", color=HARD_POINT_COLOR,
-                            line=dict(width=1, color="#ffffff")),
-            )
-        )
+    # Points durs (repères de terrain fixes), une famille par lit : existants (rouge,
+    # losanges, pointillés) le long du lit actuel, projet (brun, carrés, tirets) le long du
+    # nouveau lit, chacune à sa propre distance 0.
+    _add_hard_point_family(fig, profile.hard_points, profile.segments, "existants",
+                           HARD_POINT_COLOR, symbol="diamond", dash="dot", label_position="top center")
+    _add_hard_point_family(fig, profile.project_hard_points, profile.project_segments, "projet",
+                           PROJECT_HARD_POINT_COLOR, symbol="square", dash="dash",
+                           label_position="bottom center")
 
     fig = _apply_common_layout(fig, "Profil en long")
     fig.update_layout(xaxis_title=dict(
-        text="Distance au premier point dur (m)", font=dict(size=12, color="#6c757d")
+        text="Distance au premier point dur de chaque lit (m)", font=dict(size=12, color="#6c757d")
     ))
     # Échelle orthonormée héritée de _apply_common_layout : seulement si elle est demandée.
     if not orthonormal:

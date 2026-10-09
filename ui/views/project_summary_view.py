@@ -9,7 +9,7 @@ from PyQt6.QtGui import QColor, QKeySequence
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHeaderView, QLabel, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
-from core.hard_points import format_slope
+from core.hard_points import EXISTING, FAMILY_PLURALS, FAMILY_SINGULARS, PROJECT, format_slope
 from core.project_summary import ProjectSummary, ScenarioSummary
 from ui import theme
 
@@ -158,20 +158,23 @@ class ProjectSummaryView(QWidget):
 
         n = len(summary.scenarios)
         parts = [f"{n} scénario{'s' if n > 1 else ''}"]
-        points = summary.hard_points
-        if points:
-            parts.append(f"{len(points)} point{'s' if len(points) > 1 else ''} dur{'s' if len(points) > 1 else ''} "
-                         f"(PK {points[0].pk:g} → {points[-1].pk:g})")
-        else:
-            parts.append("aucun point dur complet")
+        # Les deux familles de points durs (lit existant, lit projet), chacune avec ses
+        # repères et ses pentes de tronçons.
+        families = ((EXISTING, summary.hard_points, summary.segments),
+                    (PROJECT, summary.project_hard_points, summary.project_segments))
+        segment_lines = []
+        for family, points, segments in families:
+            if points:
+                kind = FAMILY_PLURALS[family] if len(points) > 1 else FAMILY_SINGULARS[family]
+                parts.append(f"{len(points)} {kind} (PK {points[0].pk:g} → {points[-1].pk:g})")
+            else:
+                parts.append(f"aucun {FAMILY_SINGULARS[family]} complet")
+            if segments:
+                slopes = " / ".join(format_slope(s.slope) for s in segments)
+                segment_lines.append(f"Pentes des tronçons entre {FAMILY_PLURALS[family]} : I = {slopes}")
         self.lbl_subtitle.setText(" · ".join(parts))
-
-        if summary.segments:
-            slopes = " / ".join(format_slope(s.slope) for s in summary.segments)
-            self.lbl_segments.setText(f"Pentes des tronçons entre points durs : I = {slopes}")
-        else:
-            self.lbl_segments.setText("")
-        self.lbl_segments.setVisible(bool(summary.segments))
+        self.lbl_segments.setText("\n".join(segment_lines))
+        self.lbl_segments.setVisible(bool(segment_lines))
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)

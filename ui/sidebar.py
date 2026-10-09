@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
                              QStyledItemDelegate, QDialog, QFileDialog)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
-from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME, DistanceTakenError
-from core.hard_points import SlopeReport
+from database.db_manager import (DatabaseManager, DEFAULT_SCENARIO_NAME, DistanceTakenError,
+                                 ProjectDistanceOutOfZoneError)
+from core.hard_points import EXISTING, SlopeReport
 from ui.dialogs.archives_dialog import ArchivesDialog
 from ui.dialogs.hard_points_dialog import HardPointsDialog
 from ui.dialogs.scenario_dialog import ScenarioDialog
@@ -765,22 +766,52 @@ class Sidebar(QWidget):
     # --- Profils ---
 
     def _prompt_distance(self, title: str, project_id: int, current: float = 0.0) -> Optional[float]:
-        """Saisie de la distance d'un profil au premier point dur, bornée par la zone
-        couverte par les points durs du projet (libre faute de zone). None si annulée."""
-        points = [p for p in self.db.get_hard_points(project_id) if p["pk"] is not None and p["z"] is not None]
-        zone = self.db.get_distance_zone(project_id)
-        reference = f"au premier point dur « {points[0]['name']} »" if points and points[0]["name"] \
-            else "au premier point dur"
+        """Saisie de la distance existante d'un profil (le long du lit existant, au premier
+        point dur existant), bornée par la zone couverte par les points durs existants du
+        projet (libre faute de zone). None si annulée. La distance projet d'un nouveau
+        profil en est déduite (cf. DatabaseManager._initial_project_distance)."""
+        points = [p for p in self.db.get_hard_points(project_id, EXISTING)
+                  if p["pk"] is not None and p["z"] is not None]
+        zone = self.db.get_distance_zone(project_id, EXISTING)
+        reference = f"au premier point dur existant « {points[0]['name']} »" if points and points[0]["name"] \
+            else "au premier point dur existant"
         if zone is None:
-            label = f"Distance {reference} (m) :"
+            label = f"Distance existante {reference} (m) :"
             low, high = _DISTANCE_MIN, _DISTANCE_MAX
         else:
-            label = f"Distance {reference} (m), entre {zone[0]:g} et {zone[1]:g} :"
+            label = f"Distance existante {reference} (m), entre {zone[0]:g} et {zone[1]:g} :"
             low, high = zone
         distance, ok = QInputDialog.getDouble(
             self, title, label, min(max(current, low), high), low, high, _DISTANCE_DECIMALS,
         )
         return distance if ok else None
+
+    def _prompt_project_distance(self, title: str, error: ProjectDistanceOutOfZoneError) -> Optional[float]:
+        """Distance projet d'un profil qui ne peut pas reprendre sa distance existante (elle
+        sortirait de la zone des points durs projet), bornée par cette zone et pré-remplie
+        avec la valeur autorisée la plus proche. None si annulée."""
+        who = f"de « {error.profile_name} » " if error.profile_name else ""
+        label = (f"La distance existante {who}({error.distance:g} m) sort de la zone couverte par les "
+                 f"points durs projet : le lit projet est plus court.\n"
+                 f"Distance projet (m), entre {error.zone[0]:g} et {error.zone[1]:g} :")
+        value, ok = QInputDialog.getDouble(
+            self, title, label, error.suggested, error.zone[0], error.zone[1], _DISTANCE_DECIMALS,
+        )
+        return value if ok else None
+
+    def _with_project_distance(self, title: str, attempt):
+        """`attempt(project_distance)` (création, duplication) : d'abord sans distance projet
+        (elle reprend la distance existante) ; si elle sortirait de la zone projet, elle est
+        demandée et l'opération recommence avec elle. Retourne le résultat, ou None si
+        l'utilisateur annule."""
+        project_distance = None
+        while True:
+            try:
+                return attempt(project_distance)
+            except ProjectDistanceOutOfZoneError as e:
+                project_distance = self._prompt_project_distance(title, e)
+                if project_distance is None:
+                    return None
 
     def add_profile(self):
         """Nouveau profil dans le scénario sélectionné (ou celui du profil sélectionné),
@@ -832,37 +863,34 @@ class Sidebar(QWidget):
             return
 
         try:
-            profile_id = self.db.create_profile(scenario_id, name, distance)
+            profile_id = self._with_project_distance(
+                "Nouveau Profil", lambda project_distance: self.db.create_profile(
+                    scenario_id, name, distance, project_distance))
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+            return
+        if profile_id is None:
             return
         self.refresh_tree()
         self._select((PROFILE, profile_id))
 
     def rename_profile(self, data: dict, current_name: str):
-        """Demande un nouveau nom (texte libre) et une nouvelle distance au point dur
-        amont, et renomme le profil."""
+        """Demande un nouveau nom (texte libre) et renomme le profil. Ses distances se
+        modifient en haut des onglets Profil existant et Profil projet."""
         new_name = self._prompt_name("Renommer le profil", "Nom du profil :", current_name)
         if new_name is None:
             return
 
-        new_distance = self._prompt_distance("Renommer le profil", data["project_id"], data.get("distance", 0.0))
-        if new_distance is None:
-            return
-
         try:
-            report = self.db.rename_profile(data["id"], new_name, new_distance)
+            self.db.rename_profile(data["id"], new_name)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
         self.refresh_tree()
-        # Distance modifiée : la pente calculée du profil a pu changer.
-        self._show_slope_report(report)
-        self.project_data_changed.emit(data["project_id"])
 
     def duplicate_profile(self, data: dict, current_name: str):
-        """Demande un nouveau nom (texte libre) et une nouvelle distance au point dur
-        amont, et duplique le profil dans le même scénario, avec ses données existantes."""
+        """Demande un nouveau nom (texte libre) et une nouvelle distance existante, et
+        duplique le profil dans le même scénario, avec ses données existantes."""
         new_name = self._prompt_name("Dupliquer le profil", "Nom du profil :")
         if new_name is None:
             return
@@ -872,9 +900,13 @@ class Sidebar(QWidget):
             return
 
         try:
-            new_profile_id = self.db.duplicate_profile(data["id"], new_name, new_distance)
+            new_profile_id = self._with_project_distance(
+                "Dupliquer le profil", lambda project_distance: self.db.duplicate_profile(
+                    data["id"], new_name, new_distance, project_distance))
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+            return
+        if new_profile_id is None:
             return
 
         self.refresh_tree()
@@ -1009,7 +1041,8 @@ class Sidebar(QWidget):
             return
         self._run_import(lambda: self._store_at_free_distance(
             scenario_id, distance, title,
-            lambda d, replace: self.db.copy_draft_to_scenario(data["id"], scenario_id, d, replace=replace),
+            lambda d, replace, project_d: self.db.copy_draft_to_scenario(
+                data["id"], scenario_id, d, replace=replace, project_distance=project_d),
         ), PROFILE)
 
     def _ask_distance_taken(self, error: DistanceTakenError):
@@ -1035,18 +1068,26 @@ class Sidebar(QWidget):
         return None
 
     def _store_at_free_distance(self, scenario_id: int, distance: float, title: str, store) -> Optional[int]:
-        """Enregistre un profil importé ou copié via `store(distance, replace)`
-        (DatabaseManager.import_profile_into_scenario ou copy_draft_to_scenario) et
-        retourne son ID. Si sa distance est déjà prise, l'utilisateur choisit : remplacer
-        le profil qui l'occupe, en saisir une autre (même choix si elle l'est aussi), ou
-        annuler (None)."""
+        """Enregistre un profil importé ou copié via `store(distance, replace,
+        project_distance)` (DatabaseManager.import_profile_into_scenario ou
+        copy_draft_to_scenario) et retourne son ID. Si sa distance est déjà prise,
+        l'utilisateur choisit : remplacer le profil qui l'occupe, en saisir une autre (même
+        choix si elle l'est aussi), ou annuler (None). Si sa distance projet ne peut pas
+        reprendre sa distance existante (zone projet plus courte), elle est demandée."""
+        replace, project_distance = False, None
         while True:
             try:
-                return store(distance, False)
+                return store(distance, replace, project_distance)
+            except ProjectDistanceOutOfZoneError as e:
+                project_distance = self._prompt_project_distance(title, e)
+                if project_distance is None:
+                    return None
+                continue
             except DistanceTakenError as e:
                 choice = self._ask_distance_taken(e)
             if choice == _REPLACE:
-                return store(distance, True)
+                replace = True
+                continue
             if choice != _OTHER_DISTANCE:
                 return None
             distance = self._prompt_distance(title, self.db.get_scenario_project_id(scenario_id), distance)
@@ -1112,7 +1153,7 @@ class Sidebar(QWidget):
             project_id = self._prompt_project_destination("Importer le scénario dans…")
             if project_id is None:
                 return
-            self._run_import(lambda: self.db.import_scenario_into_project(project_id, data), SCENARIO)
+            self._import_scenario_into_project(project_id, data)
         else:  # "profile"
             destination = self._prompt_scenario_or_draft_destination("Importer le profil dans…")
             if destination is None:
@@ -1134,7 +1175,8 @@ class Sidebar(QWidget):
                 return
         self._run_import(lambda: self._store_at_free_distance(
             scenario_id, distance, title,
-            lambda d, replace: self.db.import_profile_into_scenario(scenario_id, data, d, replace=replace),
+            lambda d, replace, project_d: self.db.import_profile_into_scenario(
+                scenario_id, data, d, replace=replace, project_distance=project_d),
         ), PROFILE)
 
     def import_profile_into_scenario_item(self, data: dict):
@@ -1150,7 +1192,26 @@ class Sidebar(QWidget):
         imported = self._pick_import_file(expected_type="scenario")
         if imported is None:
             return
-        self._run_import(lambda: self.db.import_scenario_into_project(data["id"], imported), SCENARIO)
+        self._import_scenario_into_project(data["id"], imported)
+
+    def _import_scenario_into_project(self, project_id: int, data: dict):
+        """Importe un fichier scénario dans un projet. Un profil dont la distance projet ne
+        peut pas reprendre sa distance existante (fichier d'une version antérieure, zone
+        projet plus courte) voit sa distance projet demandée, puis l'import recommence."""
+        title = f"Importer « {data['name']} »"
+        # Copie des profils : les distances projet saisies n'altèrent pas le fichier lu.
+        data = {**data, "profiles": [dict(p) for p in data.get("profiles", [])]}
+
+        def attempt():
+            while True:
+                try:
+                    return self.db.import_scenario_into_project(project_id, data)
+                except ProjectDistanceOutOfZoneError as e:
+                    project_distance = self._prompt_project_distance(title, e)
+                    if project_distance is None:
+                        return None
+                    data["profiles"][e.profile_index]["project_distance"] = project_distance
+        self._run_import(attempt, SCENARIO)
 
     def import_profile_into_drafts_item(self):
         """Menu contextuel de la zone Draft : importe directement un fichier profil comme

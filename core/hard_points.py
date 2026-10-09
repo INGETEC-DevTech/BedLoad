@@ -1,10 +1,15 @@
 # core/hard_points.py
 """Règles des points durs d'un projet et de la pente hydraulique qui en découle.
 
-Un point dur est un repère de terrain fixe (nom, PK, Z). Un projet en a une liste libre ;
-seuls les points COMPLETS (PK et Z renseignés) entrent dans les calculs, triés par PK. Un
-point incomplet (hérité d'une ancienne version, où les champs pouvaient rester vides) est
-conservé et affiché, mais ignoré.
+Un point dur est un repère de terrain fixe (nom, PK, Z). Un projet en a deux familles,
+indépendantes : les points durs EXISTANTS, repérés le long du lit actuel, et les points
+durs PROJET, le long du nouveau lit (rivière déplacée ou reméandrée : il peut être plus
+long pour relier les mêmes points). Un même ouvrage présent dans les deux lits est saisi
+deux fois. Toutes les règles ci-dessous s'appliquent à chaque famille séparément ; les
+fonctions de calcul reçoivent les points d'une seule famille (cf. of_family). Dans une
+famille, seuls les points COMPLETS (PK et Z renseignés) entrent dans les calculs, triés par
+PK. Un point incomplet (hérité d'une ancienne version, où les champs pouvaient rester
+vides) est conservé et affiché, mais ignoré.
 
 - Le premier point complet est la référence "distance 0" des profils : un profil à la
   distance d est au PK (PK du premier point + d).
@@ -23,6 +28,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 SLOPE_COMPUTED = "computed"
 SLOPE_IMPOSED = "imposed"
 
+# Familles de points durs, et libellés : colonne « Type » de la saisie, et messages.
+EXISTING = "existing"
+PROJECT = "project"
+FAMILIES = (EXISTING, PROJECT)
+FAMILY_TYPES = {EXISTING: "Existant", PROJECT: "Projet"}
+FAMILY_PLURALS = {EXISTING: "points durs existants", PROJECT: "points durs projet"}
+FAMILY_SINGULARS = {EXISTING: "point dur existant", PROJECT: "point dur projet"}
+
 # Tolérance sur les PK (m) : comparaisons de position aux arrondis de saisie près.
 _PK_TOLERANCE = 1e-6
 
@@ -33,6 +46,7 @@ class HardPoint:
     pk: Optional[float]
     z: Optional[float]
     id: Optional[int] = None  # identifiant en base, None pour un point pas encore enregistré
+    family: str = EXISTING
 
     @property
     def is_complete(self) -> bool:
@@ -44,10 +58,16 @@ class HardPoint:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "HardPoint":
-        return cls(name=data.get("name"), pk=data.get("pk"), z=data.get("z"), id=data.get("id"))
+        return cls(name=data.get("name"), pk=data.get("pk"), z=data.get("z"), id=data.get("id"),
+                   family=data.get("family") or EXISTING)
 
     def to_dict(self) -> Dict:
-        return {"id": self.id, "name": self.name, "pk": self.pk, "z": self.z}
+        return {"id": self.id, "name": self.name, "pk": self.pk, "z": self.z, "family": self.family}
+
+
+def of_family(points: Iterable[HardPoint], family: str) -> List[HardPoint]:
+    """Points d'une famille (EXISTING ou PROJECT), dans l'ordre reçu."""
+    return [p for p in points if p.family == family]
 
 
 @dataclass
@@ -109,23 +129,26 @@ def segment_for_distance(points: Iterable[HardPoint], distance: float) -> Option
     return all_segments[-1]  # exactement sur le dernier point : dernier tronçon
 
 
-def computed_slope(points: Iterable[HardPoint], distance: float) -> Tuple[Optional[float], Optional[Segment], str]:
-    """(pente, tronçon, explication) pour un profil à `distance`. La pente est None quand
+def computed_slope(points: Iterable[HardPoint], distance: float,
+                   family: str = EXISTING) -> Tuple[Optional[float], Optional[Segment], str]:
+    """(pente, tronçon, explication) pour un profil à `distance`, avec les points durs
+    `points` de la famille `family` (qui ne sert qu'aux messages). La pente est None quand
     aucun calcul n'est possible, l'explication dit alors pourquoi."""
     points = list(points)
+    kind = FAMILY_PLURALS[family]
     if distance_zone(points) is None:
-        return None, None, "le projet n'a pas au moins deux points durs complets (PK et Z)"
+        return None, None, f"le projet n'a pas au moins deux {kind} complets (PK et Z)"
     # Points durs hérités d'une ancienne version (jamais validés à la saisie) : une
     # contre-pente, une pente nulle ou deux PK égaux rendent le calcul impossible.
     for segment in segments(points):
         if segment.downstream.pk - segment.upstream.pk <= _PK_TOLERANCE or segment.slope <= 0:
-            return None, None, (f"les points durs {segment.label} présentent une contre-pente, "
+            return None, None, (f"les {kind} {segment.label} présentent une contre-pente, "
                                 "une pente nulle ou un même PK")
     segment = segment_for_distance(points, distance)
     if segment is None:
         zone = distance_zone(points)
         return None, None, (f"la distance du profil ({distance:g} m) est hors de la zone couverte "
-                            f"par les points durs ({zone[0]:g} à {zone[1]:g} m)")
+                            f"par les {kind} ({zone[0]:g} à {zone[1]:g} m)")
     return segment.slope, segment, ""
 
 
@@ -184,6 +207,21 @@ def validate_hard_points(points: Sequence[HardPoint], reference_id: Optional[int
                 f"Ces profils sortiraient de la zone couverte par les points durs (PK {first:g} à "
                 f"{last:g}) : {', '.join(outside)}."
             )
+    return errors
+
+
+def validate_hard_point_families(points: Sequence[HardPoint],
+                                 reference_ids: Optional[Dict[str, Optional[int]]] = None,
+                                 profile_pks: Optional[Dict[str, Dict[str, float]]] = None,
+                                 original_incomplete: Optional[Dict[int, Tuple]] = None) -> List[str]:
+    """validate_hard_points appliqué à chaque famille séparément (`reference_ids` et
+    `profile_pks` : par famille), chaque message étant précédé de sa famille."""
+    reference_ids, profile_pks = reference_ids or {}, profile_pks or {}
+    errors = []
+    for family in FAMILIES:
+        for error in validate_hard_points(of_family(points, family), reference_ids.get(family),
+                                          profile_pks.get(family), original_incomplete):
+            errors.append(f"{FAMILY_PLURALS[family].capitalize()} — {error}")
     return errors
 
 

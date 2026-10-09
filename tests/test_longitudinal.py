@@ -133,5 +133,49 @@ def test_table_values_are_exactly_those_of_the_chart():
         return sorted((r.distance, getattr(r, column)) for r in table if getattr(r, column) is not None)
 
     for column, trace in (("z_existing", "TN existant (thalweg)"), ("z_project", "Projet (fond de lit)"),
-                          ("z_hard_point", "Points durs")):
+                          ("z_hard_point", "Points durs existants")):
         assert plotted(column) == sorted(zip(traces[trace].x, traces[trace].y))
+
+
+# --- Lits existant et projet dissociés ---
+
+TWO_BEDS_POINTS = [{"name": "Pont", "pk": 1000.0, "z": 50.0, "family": "existing"},
+                   {"name": "Seuil", "pk": 1300.0, "z": 47.0, "family": "existing"},
+                   {"name": "Pont", "pk": 5000.0, "z": 50.0, "family": "project"},
+                   {"name": "Méandre", "pk": 5250.0, "z": 48.5, "family": "project"},
+                   {"name": "Seuil", "pk": 5450.0, "z": 47.0, "family": "project"}]
+
+
+def test_each_family_has_its_own_distance_zero_and_segments():
+    profile = build_longitudinal_profile([], TWO_BEDS_POINTS)
+
+    assert [(m.name, m.distance) for m in profile.hard_points] == [("Pont", 0.0), ("Seuil", 300.0)]
+    assert [(m.name, m.distance) for m in profile.project_hard_points] == [
+        ("Pont", 0.0), ("Méandre", 250.0), ("Seuil", 450.0)]
+    assert [s.slope for s in profile.segments] == [pytest.approx(0.01)]
+    assert [s.slope for s in profile.project_segments] == [pytest.approx(0.006), pytest.approx(0.0075)]
+
+
+def test_project_bottom_is_placed_at_the_project_distance_and_the_profile_at_the_existing_one():
+    rows = [(100.0, 49.0, 48.6, "PK 100", 160.0), (200.0, 48.0, None, "PK 200", 330.0)]
+    profile = build_longitudinal_profile(rows, TWO_BEDS_POINTS)
+
+    assert profile.pk_existing == [100.0, 200.0] and profile.pk_project == [160.0]
+    assert profile.stations == [(100.0, "PK 100"), (200.0, "PK 200")]
+
+
+def test_table_places_each_project_hard_point_between_the_profiles_around_it_on_the_new_bed():
+    """« Méandre » (distance projet 250) entre PK 100 (160) et PK 200 (330) ; « Seuil »
+    projet (450) après le dernier profil."""
+    rows = [(100.0, 49.0, 48.6, "PK 100", 160.0), (200.0, 48.0, 47.8, "PK 200", 330.0)]
+    table = longitudinal_table(build_longitudinal_profile(rows, TWO_BEDS_POINTS))
+
+    assert [(r.name, r.distance, r.project_distance, r.z_hard_point, r.z_project_hard_point) for r in table] == [
+        ("Pont", 0.0, None, 50.0, None),
+        ("Pont", None, 0.0, None, 50.0),
+        ("PK 100", 100.0, 160.0, None, None),
+        ("Méandre", None, 250.0, None, 48.5),
+        ("PK 200", 200.0, 330.0, None, None),
+        ("Seuil", 300.0, None, 47.0, None),
+        ("Seuil", None, 450.0, None, 47.0),
+    ]

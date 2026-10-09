@@ -82,15 +82,33 @@ def test_longitudinal_export_is_one_table_sorted_by_distance_with_empty_cells(tm
 
     sheet = _longitudinal_sheet(path)
     assert [[c.value for c in row] for row in sheet.iter_rows()] == [
-        ["Nom", "Distance (m)", "Z existant", "Z projet", "Z point dur"],
-        ["Pont", 0, None, None, 50],
-        ["Amont", 0, 49.8, None, None],
-        ["PK 80", 80, None, 48.4, None],
-        ["Seuil", 150, None, None, 48],
-        ["PK 150", 150, 47.9, 47.6, None],
+        ["Nom", "Distance existante (m)", "Distance projet (m)", "Z existant", "Z projet",
+         "Z point dur existant", "Z point dur projet"],
+        ["Pont", 0, None, None, None, 50, None],
+        ["Amont", 0, 0, 49.8, None, None, None],
+        ["PK 80", 80, 80, None, 48.4, None, None],
+        ["Seuil", 150, None, None, None, 48, None],
+        ["PK 150", 150, 150, 47.9, 47.6, None, None],
     ]
     assert list(sheet.tables) == ["ProfilEnLong"]  # un seul tableau, sur toutes les lignes
-    assert sheet.tables["ProfilEnLong"].ref == "A1:E6"
+    assert sheet.tables["ProfilEnLong"].ref == "A1:G6"
+
+
+def test_longitudinal_export_has_both_distances_and_both_hard_point_families(tmp_path):
+    """Lit projet plus long : le profil a ses deux distances, chaque point dur la distance
+    et la cote de sa famille seulement."""
+    hard_points = [{"name": "Pont", "pk": 0.0, "z": 50.0, "family": "existing"},
+                   {"name": "Pont", "pk": 0.0, "z": 50.0, "family": "project"},
+                   {"name": "Seuil", "pk": 300.0, "z": 47.0, "family": "project"}]
+    path = tmp_path / "deux_lits.xlsx"
+
+    export_longitudinal_profile(path, build_longitudinal_profile([(100.0, 48.9, 48.5, "PK 100", 160.0)], hard_points))
+
+    rows = list(_longitudinal_sheet(path).iter_rows(values_only=True))
+    assert rows[1:] == [("Pont", 0, None, None, None, 50, None),
+                        ("Pont", None, 0, None, None, None, 50),
+                        ("PK 100", 100, 160, 48.9, 48.5, None, None),
+                        ("Seuil", None, 300, None, None, None, 47)]
 
 
 def test_longitudinal_export_keeps_full_precision(tmp_path):
@@ -99,7 +117,7 @@ def test_longitudinal_export_keeps_full_precision(tmp_path):
     export_longitudinal_profile(path, build_longitudinal_profile([(12.3456789, 47.123456789, 46.987654321, "PK 12")]))
 
     _, row = list(_longitudinal_sheet(path).iter_rows(values_only=True))
-    assert row == ("PK 12", 12.3456789, 47.123456789, 46.987654321, None)
+    assert row == ("PK 12", 12.3456789, 12.3456789, 47.123456789, 46.987654321, None, None)
 
 
 def test_longitudinal_export_without_any_row_is_still_a_valid_table(tmp_path):
@@ -107,4 +125,4 @@ def test_longitudinal_export_without_any_row_is_still_a_valid_table(tmp_path):
     export_longitudinal_profile(path, build_longitudinal_profile([]))
 
     sheet = _longitudinal_sheet(path)
-    assert sheet.tables["ProfilEnLong"].ref == "A1:E2"
+    assert sheet.tables["ProfilEnLong"].ref == "A1:G2"

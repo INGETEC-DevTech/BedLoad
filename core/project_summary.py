@@ -49,15 +49,18 @@ class ScenarioSummary:
 class ProjectSummary:
     name: str
     scenarios: List[ScenarioSummary]
-    # Points durs complets (PK et Z), dans l'ordre des PK, et tronçons qui les relient.
+    # Points durs existants complets (PK et Z), dans l'ordre des PK, et tronçons qui les
+    # relient ; de même pour les points durs projet (lit déplacé ou reméandré).
     hard_points: List[HardPoint] = field(default_factory=list)
     segments: List[SegmentMarker] = field(default_factory=list)
+    project_hard_points: List[HardPoint] = field(default_factory=list)
+    project_segments: List[SegmentMarker] = field(default_factory=list)
 
 
 def earthwork_volumes(stations: Sequence[StationEarthworks]) -> Tuple[Optional[float], Optional[float]]:
     """Volumes de déblai et de remblai (m³) par la méthode des moyennes des aires : entre
-    deux profils calculés consécutifs (par distance), surface moyenne × distance qui les
-    sépare. Un profil non calculé est simplement sauté (ses voisins calculés sont reliés
+    deux profils calculés consécutifs (par distance existante), surface moyenne × distance
+    qui les sépare. Un profil non calculé est simplement sauté (ses voisins calculés sont reliés
     directement) ; rien n'est compté au-delà du premier et du dernier profil calculés.
     (None, None) s'il y a moins de deux profils calculés : pas de longueur d'application."""
     computed = sorted((s for s in stations if s.computed), key=lambda s: s.distance)

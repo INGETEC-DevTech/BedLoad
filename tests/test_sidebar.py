@@ -730,8 +730,8 @@ def test_longitudinal_excel_export_writes_the_values_of_the_displayed_chart(main
 
     assert proposed == ["Base - Profil en long.xlsx"]
     rows = list(load_workbook(path)["Profil en long"].iter_rows(values_only=True))
-    assert rows[1:] == [("Pont", 0, None, None, 50), ("PK 100", 100, 48.25, 48.75, None),
-                        ("PK 250", 250, None, None, None), ("Seuil", 400, None, None, 46)]
+    assert rows[1:] == [("Pont", 0, None, None, None, 50, None), ("PK 100", 100, 100, 48.25, 48.75, None, None),
+                        ("PK 250", 250, 250, None, None, None, None), ("Seuil", 400, None, None, None, 46, None)]
     fig, _ = main_window.plot_view.figures[-1]
     traces = {t.name: t for t in fig.data}
     assert list(zip(traces["TN existant (thalweg)"].x, traces["TN existant (thalweg)"].y)) == [(100.0, 48.25)]
@@ -1337,6 +1337,10 @@ HP_POINTS = [
     {"name": "B", "pk": 1200.0, "z": 46.0},
     {"name": "C", "pk": 1400.0, "z": 45.0},
 ]
+# Les mêmes points dans les deux lits (comme après la mise à jour d'un projet) : lignes 0 à
+# 2 du dialogue pour les points durs existants, 3 à 5 pour les points durs projet.
+HP_BOTH = [{**p, "family": family} for family in ("existing", "project") for p in HP_POINTS]
+PROJECT_ROW_A = 3
 
 
 def _accept_hard_points_dialog(monkeypatch, edit):
@@ -1354,18 +1358,21 @@ def _accept_hard_points_dialog(monkeypatch, edit):
 
 
 def test_editing_hard_points_recomputes_slopes_and_reports_them(sidebar, db, monkeypatch, info_messages):
+    """Le calcul hydraulique porte sur le lit projet (par défaut) : c'est le point dur projet
+    modifié qui change la pente."""
     from ui.dialogs.hard_points_dialog import COL_Z
     project_id = db.create_project("P")
-    db.set_hard_points(project_id, HP_POINTS)
+    db.set_hard_points(project_id, HP_BOTH)
     scenario_id = db.create_scenario(project_id, "S")
     profile_id = db.create_profile(scenario_id, "PK 1100", 100.0)
     sidebar.refresh_tree()
     changed = record(sidebar.project_data_changed)
-    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(0, COL_Z).setText("52"))
+    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(PROJECT_ROW_A, COL_Z).setText("52"))
 
     sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
 
-    assert db.get_hard_points(project_id)[0]["z"] == 52.0
+    assert db.get_hard_points(project_id, "project")[0]["z"] == 52.0
+    assert db.get_hard_points(project_id, "existing")[0]["z"] == 50.0
     assert db.load_profile_state(profile_id)[1]["slope"] == pytest.approx(0.03)
     assert info_messages and "1 profil(s) mis à jour : S › PK 1100" in info_messages[-1][1]
     assert changed == [(project_id,)]
@@ -1373,7 +1380,7 @@ def test_editing_hard_points_recomputes_slopes_and_reports_them(sidebar, db, mon
 
 def test_hard_points_that_would_leave_a_profile_outside_cannot_be_validated(sidebar, db, monkeypatch):
     project_id = db.create_project("P")
-    db.set_hard_points(project_id, HP_POINTS)
+    db.set_hard_points(project_id, HP_BOTH)
     scenario_id = db.create_scenario(project_id, "S")
     db.create_profile(scenario_id, "PK 1350", 350.0)
     sidebar.refresh_tree()
@@ -1387,13 +1394,14 @@ def test_hard_points_that_would_leave_a_profile_outside_cannot_be_validated(side
 
     sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
 
+    assert "Points durs existants — Ces profils sortiraient" in seen["errors"]
     assert "« S › PK 1350 » (PK 1350)" in seen["errors"]
-    assert len(db.get_hard_points(project_id)) == 3  # rien d'enregistré
+    assert len(db.get_hard_points(project_id)) == 6  # rien d'enregistré
 
 
 def test_distance_prompt_is_bounded_by_the_hard_points(sidebar, db, monkeypatch):
     project_id = db.create_project("P")
-    db.set_hard_points(project_id, HP_POINTS)
+    db.set_hard_points(project_id, HP_BOTH)
     scenario_id = db.create_scenario(project_id, "S")
     sidebar.refresh_tree()
     asked = {}
@@ -1407,12 +1415,13 @@ def test_distance_prompt_is_bounded_by_the_hard_points(sidebar, db, monkeypatch)
     sidebar.add_profile_to_scenario(scenario_id, project_id)
 
     assert (asked["low"], asked["high"]) == (0.0, 400.0)
-    assert "au premier point dur « A »" in asked["label"] and "entre 0 et 400" in asked["label"]
+    assert "Distance existante au premier point dur existant « A »" in asked["label"]
+    assert "entre 0 et 400" in asked["label"]
     profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
     assert db.load_profile_state(profile["id"])[1] == {"slope_mode": "computed", "slope": pytest.approx(0.005)}
 
 
-def _open_profile(window, distance=100.0, points=HP_POINTS):
+def _open_profile(window, distance=100.0, points=HP_BOTH):
     db = window.db_manager
     project_id = db.create_project("P")
     db.set_hard_points(project_id, points)
@@ -1489,7 +1498,7 @@ def test_drafts_always_have_an_imposed_slope(main_window):
 def test_open_profile_is_refreshed_after_its_hard_points_change(main_window, monkeypatch):
     from ui.dialogs.hard_points_dialog import COL_Z
     project_id, _ = _open_profile(main_window, distance=100.0)
-    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(0, COL_Z).setText("52"))
+    _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(PROJECT_ROW_A, COL_Z).setText("52"))
 
     main_window.sidebar.edit_hard_points({"type": PROJECT, "id": project_id})
 
@@ -1503,3 +1512,245 @@ def test_startup_message_reports_the_migration(main_window, info_messages):
 
     assert info_messages[-1][0] == "Mise à jour des pentes hydrauliques"
     assert "1 profil(s) mis à jour : S › PK 100" in info_messages[-1][1]
+
+
+# --- Lits existant et projet : distances en haut des onglets, pente selon le lit ---
+
+def _two_beds_profile(window):
+    """Lit projet plus long que le lit existant : A → C sur 400 m existants (pentes 0.02 puis
+    0.005), A' → C' sur 600 m projet (pente 0.0083). Profil à 100 m existants, 150 m projet."""
+    db = window.db_manager
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, [{**p, "family": "existing"} for p in HP_POINTS] + [
+        {"name": "A'", "pk": 0.0, "z": 50.0, "family": "project"},
+        {"name": "C'", "pk": 600.0, "z": 45.0, "family": "project"}])
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_profile(scenario_id, "PK", 100.0, project_distance=150.0)
+    other_id = db.create_profile(scenario_id, "Autre", 300.0)
+    window.sidebar.refresh_tree()
+    click(window.sidebar, (PROFILE, profile_id))
+    return scenario_id, profile_id, other_id
+
+
+def test_each_tab_shows_its_distance_bounded_by_its_family_and_drafts_have_none(main_window):
+    _, profile_id, _ = _two_beds_profile(main_window)
+    existing, project = main_window.form_existing.distance_field, main_window.form_project.distance_field
+
+    assert not existing.isHidden() and not project.isHidden()
+    assert (existing.value(), project.value()) == (100.0, 150.0)
+    assert (existing.spin.minimum(), existing.spin.maximum()) == (0.0, 400.0)
+    assert (project.spin.minimum(), project.spin.maximum()) == (0.0, 600.0)
+    assert "au premier point dur existant « A »" in existing.lbl_hint.text()
+    assert "au premier point dur projet « A' »" in project.lbl_hint.text()
+
+    draft_id = main_window.db_manager.create_draft("Essai")
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (DRAFT, draft_id))
+    assert existing.isHidden() and project.isHidden()
+
+
+def test_editing_the_project_distance_saves_it_and_updates_the_computed_slope(main_window):
+    scenario_id, profile_id, _ = _two_beds_profile(main_window)
+    db = main_window.db_manager
+
+    main_window.form_project.distance_field.spin.setValue(300.0)
+
+    assert db.get_profile_distances(profile_id) == (100.0, 300.0)
+    assert main_window.form_project.distance_field.value() == 300.0
+    # Calcul sur le lit projet (par défaut) : un seul tronçon A' → C'.
+    assert main_window.form_hydraulics.inputs["slope"].value() == pytest.approx(5 / 600, abs=1e-4)
+
+
+def test_editing_the_existing_distance_reorders_the_tree(main_window):
+    scenario_id, profile_id, other_id = _two_beds_profile(main_window)
+
+    main_window.form_existing.distance_field.spin.setValue(350.0)
+
+    assert main_window.db_manager.get_profile_distances(profile_id) == (350.0, 150.0)
+    names = [name for _, name, _ in tree_snapshot(main_window.sidebar)[0][2][0][2]]
+    assert names == ["Autre", "PK"]
+    assert main_window._current_target == ("profile", profile_id)
+
+
+def test_a_refused_distance_is_explained_and_the_saved_one_restored(main_window, monkeypatch):
+    """Distance existante déjà prise par un autre profil : refusée ; la distance projet, elle,
+    peut être partagée."""
+    _, profile_id, _ = _two_beds_profile(main_window)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2])))
+
+    main_window.form_existing.distance_field.spin.setValue(300.0)  # celle de « Autre »
+
+    assert warnings and "déjà celle d'un autre profil" in warnings[0]
+    assert main_window.form_existing.distance_field.value() == 100.0
+    assert main_window.db_manager.get_profile_distances(profile_id) == (100.0, 150.0)
+
+    main_window.form_project.distance_field.spin.setValue(300.0)  # distance projet de « Autre »
+    assert main_window.db_manager.get_profile_distances(profile_id) == (100.0, 300.0)
+
+
+def test_the_computed_slope_follows_the_bed_chosen_for_the_calculation(main_window):
+    """« Calculer sur » : profil existant -> points durs existants et distance existante
+    (A → B, 0.02) ; profil projet -> points durs projet et distance projet (A' → C')."""
+    _, profile_id, _ = _two_beds_profile(main_window)
+    form = main_window.form_hydraulics
+    db = main_window.db_manager
+    assert "« A' » → « C' »" in form.lbl_slope_info.text()
+
+    form.radio_source_existing.setChecked(True)
+
+    assert form.inputs["slope"].value() == pytest.approx(0.02)
+    assert "« A » → « B »" in form.lbl_slope_info.text()
+    saved = db.load_profile_state(profile_id)[1]
+    assert (saved["hydro_source"], saved["slope_mode"], saved["slope"]) == ("existing", "computed", pytest.approx(0.02))
+
+    form.radio_source_project.setChecked(True)
+    assert form.inputs["slope"].value() == pytest.approx(5 / 600, abs=1e-4)
+
+
+def test_rename_only_changes_the_name(sidebar, db, monkeypatch):
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    profile_id = db.create_profile(scenario_id, "PK 0", 10.0)
+    sidebar.refresh_tree()
+    answer_inputs(monkeypatch, texts=["Seuil"])
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(
+        lambda *a, **k: pytest.fail("Renommer ne demande plus de distance")))
+
+    sidebar.rename_profile({"type": PROFILE, "id": profile_id, "project_id": project_id}, "PK 0")
+
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == [
+        {"id": profile_id, "name": "Seuil", "distance": 10.0}]
+
+
+# --- Distance projet demandée quand elle ne peut pas reprendre la distance existante ---
+
+SHORT_BED = ([{**p, "family": "existing"} for p in HP_POINTS]                        # 0 à 400 m
+             + [{"name": "A'", "pk": 0.0, "z": 50.0, "family": "project"},
+                {"name": "C'", "pk": 250.0, "z": 45.0, "family": "project"}])         # 0 à 250 m
+
+
+def answer_project_distance(monkeypatch, *values, existing=()):
+    """getDouble : d'abord les distances existantes `existing`, puis, pour chaque demande de
+    distance projet, la valeur suivante de `values` (None : annuler). Retourne les demandes
+    de distance projet (libellé, valeur proposée, bornes)."""
+    existing, values, asked = list(existing), list(values), []
+
+    def fake_get_double(parent, title, label, value, low, high, decimals):
+        if "Distance projet" not in label:
+            return existing.pop(0), True
+        asked.append((label, value, low, high))
+        chosen = values.pop(0)
+        return (chosen, True) if chosen is not None else (0.0, False)
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(fake_get_double))
+    return asked
+
+
+def _short_bed_scenario(db):
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, SHORT_BED)
+    return project_id, db.create_scenario(project_id, "S")
+
+
+def test_new_profile_beyond_the_project_zone_asks_its_project_distance(sidebar, db, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    sidebar.refresh_tree()
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("PK 350", True)))
+    asked = answer_project_distance(monkeypatch, 240.0, existing=[350.0])
+
+    sidebar.add_profile_to_scenario(scenario_id, project_id)
+
+    label, proposed, low, high = asked[0]
+    assert "La distance existante de « PK 350 » (350 m) sort de la zone" in label
+    assert (proposed, low, high) == (250.0, 0.0, 250.0)  # valeur autorisée la plus proche
+    profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
+    assert db.get_profile_distances(profile["id"]) == (350.0, 240.0)
+
+
+def test_cancelling_the_project_distance_creates_nothing(sidebar, db, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    sidebar.refresh_tree()
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("PK 350", True)))
+    answer_project_distance(monkeypatch, None, existing=[350.0])
+
+    sidebar.add_profile_to_scenario(scenario_id, project_id)
+
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == []
+
+
+def test_profile_inside_the_project_zone_is_not_asked_anything(sidebar, db, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    sidebar.refresh_tree()
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("PK 200", True)))
+    asked = answer_project_distance(monkeypatch, existing=[200.0])
+
+    sidebar.add_profile_to_scenario(scenario_id, project_id)
+
+    assert asked == []
+    profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
+    assert db.get_profile_distances(profile["id"]) == (200.0, 200.0)
+
+
+def test_duplicate_beyond_the_project_zone_asks_its_project_distance(sidebar, db, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    source = db.create_profile(scenario_id, "PK 100", 100.0)
+    sidebar.refresh_tree()
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Copie", True)))
+    asked = answer_project_distance(monkeypatch, 230.0, existing=[380.0])
+
+    sidebar.duplicate_profile({"type": PROFILE, "id": source, "project_id": project_id, "distance": 100.0},
+                              "PK 100")
+
+    assert asked and asked[0][1] == 250.0
+    copy = next(p for p in db.get_all_projects()[0]["scenarios"][0]["profiles"] if p["name"] == "Copie")
+    assert db.get_profile_distances(copy["id"]) == (380.0, 230.0)
+
+
+def test_importing_an_old_profile_file_beyond_the_project_zone_asks_its_project_distance(
+        sidebar, db, tmp_path, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    path = tmp_path / "ancien.json"
+    path.write_text(json.dumps({"type": "profile", "version": 2, "name": "Ancien", "distance": 300.0,
+                                "existing_data": [], "project_params": {}}), encoding="utf-8")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    asked = answer_project_distance(monkeypatch, 245.0)
+
+    sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    assert asked and asked[0][1] == 250.0
+    profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
+    assert db.get_profile_distances(profile["id"]) == (300.0, 245.0)
+
+
+def test_draft_copied_beyond_the_project_zone_asks_its_project_distance(sidebar, db, monkeypatch):
+    project_id, scenario_id = _short_bed_scenario(db)
+    draft_id = db.create_draft("Essai")
+    sidebar.refresh_tree()
+    answer_item_choice(monkeypatch, "P › S")
+    asked = answer_project_distance(monkeypatch, 220.0, existing=[320.0])
+
+    sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai")
+
+    assert asked and asked[0][1] == 250.0
+    profile = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]
+    assert db.get_profile_distances(profile["id"]) == (320.0, 220.0)
+
+
+def test_importing_an_old_scenario_asks_each_project_distance_beyond_the_zone(sidebar, db, tmp_path, monkeypatch):
+    project_id, _ = _short_bed_scenario(db)
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps({"type": "scenario", "version": 2, "name": "Ancien", "profiles": [
+        {"name": "PK 100", "distance": 100.0, "existing_data": [], "project_params": {}},
+        {"name": "PK 300", "distance": 300.0, "existing_data": [], "project_params": {}},
+        {"name": "PK 380", "distance": 380.0, "existing_data": [], "project_params": {}}]}), encoding="utf-8")
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    asked = answer_project_distance(monkeypatch, 230.0, 248.0)
+
+    sidebar.import_scenario_into_project_item({"type": PROJECT, "id": project_id})
+
+    assert ["« PK 300 »" in asked[0][0], "« PK 380 »" in asked[1][0]] == [True, True]
+    imported = next(s for s in db.get_all_projects()[0]["scenarios"] if s["name"] == "Ancien")
+    assert {p["name"]: db.get_profile_distances(p["id"]) for p in imported["profiles"]} == {
+        "PK 100": (100.0, 100.0), "PK 300": (300.0, 230.0), "PK 380": (380.0, 248.0)}

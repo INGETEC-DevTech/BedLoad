@@ -1,10 +1,12 @@
 """Points durs multiples et pente hydraulique calculée : base de données, migration,
-export/import."""
+export/import. Sauf mention contraire, les points durs sont saisis dans les deux familles
+(lit existant et lit projet confondus, comme après la mise à jour d'un projet)."""
 import json
 import sqlite3
 
 import pytest
 
+from core.hard_points import EXISTING, PROJECT
 from database.db_manager import DatabaseManager
 
 # A (PK 1000, Z 50) -> B (PK 1200, Z 46) -> C (PK 1400, Z 45) : zone de distances 0 à 400 m,
@@ -16,13 +18,18 @@ POINTS = [
 ]
 
 
+def both_families(points):
+    """Les mêmes points en points durs existants et en points durs projet."""
+    return [{**p, "family": family} for family in (EXISTING, PROJECT) for p in points]
+
+
 def make_db(tmp_path, name="test.db") -> DatabaseManager:
     return DatabaseManager(db_path=tmp_path / name)
 
 
 def project_with_points(db, points=POINTS, name="P"):
     project_id = db.create_project(name)
-    db.set_hard_points(project_id, points)
+    db.set_hard_points(project_id, both_families(points))
     return project_id, db.create_scenario(project_id, "S")
 
 
@@ -36,6 +43,10 @@ def distances(db, scenario_id):
         for project in db.get_all_projects() for s in project["scenarios"] if s["id"] == scenario_id
         for p in s["profiles"]
     }
+
+
+def names_pks_zs(points):
+    return [(p["name"], p["pk"], p["z"]) for p in points]
 
 
 # --- Liste de points durs ---
@@ -77,26 +88,28 @@ def test_moving_hard_points_cannot_leave_existing_profiles_outside(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
     db.create_profile(scenario_id, "PK 1350", 350.0)
-    shrunk = db.get_hard_points(project_id)[:2]  # sans C : zone ramenée à 0-200 m
+    shrunk = [p for p in db.get_hard_points(project_id) if p["name"] != "C"]  # zones ramenées à 0-200 m
 
     with pytest.raises(ValueError, match="« S › PK 1350 » \\(PK 1350\\)"):
         db.set_hard_points(project_id, shrunk)
-    assert len(db.get_hard_points(project_id)) == 3
+    assert len(db.get_hard_points(project_id)) == 6
 
 
 def test_moving_the_first_point_keeps_the_real_position_of_profiles(tmp_path):
-    """Le premier point dur passe de PK 1000 à PK 950 : les profils ne bougent pas sur le
-    terrain, leur distance (relative au premier point) augmente donc de 50 m."""
+    """Le premier point dur existant passe de PK 1000 à PK 950 : les profils ne bougent pas
+    sur le terrain, leur distance existante (relative au premier point) augmente donc de 50
+    m ; leur distance projet, relative aux points durs projet, ne change pas."""
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    db.create_profile(scenario_id, "PK 1100", 100.0)
+    first = db.create_profile(scenario_id, "PK 1100", 100.0)
     db.create_profile(scenario_id, "PK 1300", 300.0)
     moved = db.get_hard_points(project_id)
-    moved[0]["pk"] = 950.0
+    moved[0]["pk"] = 950.0  # le premier point existant
 
     db.set_hard_points(project_id, moved)
 
     assert distances(db, scenario_id) == {"PK 1100": 150.0, "PK 1300": 350.0}
+    assert db.get_profile_distances(first) == (150.0, 100.0)
 
 
 # --- Distance des profils bornée par les points durs ---
@@ -109,7 +122,7 @@ def test_profile_distance_must_be_inside_the_zone(tmp_path):
         db.create_profile(scenario_id, "Trop loin", 450.0)
     profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     with pytest.raises(ValueError, match="hors de la zone"):
-        db.rename_profile(profile_id, "PK 0", -1.0)
+        db.set_profile_distance(profile_id, -1.0)
     with pytest.raises(ValueError, match="hors de la zone"):
         db.duplicate_profile(profile_id, "Copie", 400.5)
     assert distances(db, scenario_id) == {"PK 0": 0.0}
@@ -125,8 +138,10 @@ def test_without_two_complete_points_distances_are_free_and_slopes_imposed(tmp_p
     # Né en pente imposée, sans message (il n'a jamais été en pente calculée)...
     assert params(db, profile_id) == {"slope_mode": "imposed"}
     assert db.last_slope_report.message() == ""
-    # ...la raison reste disponible pour l'onglet Hydraulique.
-    assert "au moins deux points durs" in db.profile_slope_info(profile_id)["reason"]
+    # ...la raison reste disponible pour l'onglet Hydraulique, pour chaque lit.
+    info = db.profile_slope_info(profile_id)
+    assert "au moins deux points durs existants" in info[EXISTING]["reason"]
+    assert "au moins deux points durs projet" in info[PROJECT]["reason"]
 
 
 # --- Pente calculée / imposée ---
@@ -149,15 +164,17 @@ def test_profile_slope_info_names_the_segment(tmp_path):
 
     info = db.profile_slope_info(profile_id)
 
-    assert info["slope"] == pytest.approx(0.005) and info["segment"] == "« B » → « C »"
+    for family in (EXISTING, PROJECT):
+        assert info[family]["slope"] == pytest.approx(0.005) and info[family]["segment"] == "« B » → « C »"
 
 
 def test_changing_the_distance_recomputes_the_slope(tmp_path):
+    """Le calcul porte sur le lit projet (par défaut) : c'est sa distance qui compte."""
     db = make_db(tmp_path)
     _, scenario_id = project_with_points(db)
     profile_id = db.create_profile(scenario_id, "P", 100.0)
 
-    report = db.rename_profile(profile_id, "P", 300.0)
+    report = db.set_profile_distance(profile_id, 300.0, PROJECT)
 
     assert params(db, profile_id)["slope"] == pytest.approx(0.005)
     assert report.updated == ["S › P"]
@@ -170,7 +187,9 @@ def test_changing_hard_points_updates_computed_slopes_but_not_imposed_ones(tmp_p
     imposed = db.create_profile(scenario_id, "Imposée", 300.0)
     db.save_profile_state(imposed, [], {"slope_mode": "imposed", "slope": 0.0123})
     changed = db.get_hard_points(project_id)
-    changed[0]["z"] = 52.0  # tronçon A-B : 6 m sur 200 m
+    for point in changed:
+        if point["name"] == "A":
+            point["z"] = 52.0  # tronçon A-B : 6 m sur 200 m
 
     report = db.set_hard_points(project_id, changed)
 
@@ -194,14 +213,34 @@ def test_removing_hard_points_switches_computed_profiles_to_imposed(tmp_path):
 
 # --- Migration d'une base existante (points amont/aval) ---
 
+# Table des profils de la version d'avant la liste de points durs (et d'avant la
+# dissociation des lits) : pas de distance projet.
+_OLD_PROFILES_TABLE = """
+    CREATE TABLE profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scenario_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        distance REAL NOT NULL,
+        existing_data TEXT,
+        project_params TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (scenario_id) REFERENCES scenarios (id) ON DELETE CASCADE,
+        UNIQUE (scenario_id, name),
+        UNIQUE (scenario_id, distance)
+    )
+"""
+
+
 def _make_pre_list_db(tmp_path, upstream, downstream, profiles):
     """Base au format précédent : points durs amont/aval dans les colonnes de `projects`,
-    pas encore de table `hard_points`, profils sans mode de pente."""
+    pas encore de table `hard_points`, profils sans mode de pente ni distance projet."""
     db = make_db(tmp_path, "old.db")
     project_id = db.create_project("Rivière")
     scenario_id = db.create_scenario(project_id, "S")
     conn = sqlite3.connect(db.db_path)
     conn.execute("DROP TABLE hard_points")
+    conn.execute("DROP TABLE profiles")
+    conn.execute(_OLD_PROFILES_TABLE)
     conn.execute(
         """UPDATE projects SET hard_point_upstream_name = ?, hard_point_upstream_x = ?, hard_point_upstream_z = ?,
                hard_point_downstream_name = ?, hard_point_downstream_x = ?, hard_point_downstream_z = ?
@@ -215,19 +254,23 @@ def _make_pre_list_db(tmp_path, upstream, downstream, profiles):
 
 
 def test_migration_turns_upstream_and_downstream_into_first_and_last_points(tmp_path):
+    """Les deux points deviennent premier et dernier points durs, dans les deux familles ;
+    la distance projet des profils est leur distance."""
     path = _make_pre_list_db(tmp_path, ("Début", 0.0, 51.0), ("Fin", 500.0, 40.0),
                              [("PK 100", 100.0, 0.058), ("PK 300", 300.0, 0.005)])
 
     db = DatabaseManager(db_path=path)
 
-    assert [(p["name"], p["pk"], p["z"]) for p in db.get_hard_points(1)] == [("Début", 0.0, 51.0), ("Fin", 500.0, 40.0)]
+    for family in (EXISTING, PROJECT):
+        assert names_pks_zs(db.get_hard_points(1, family)) == [("Début", 0.0, 51.0), ("Fin", 500.0, 40.0)]
+    assert db.get_profile_distances(1) == (100.0, 100.0)
     # Les profils existants passent en pente calculée : 11 m sur 500 m.
     assert params(db, 1) == {"slope": pytest.approx(0.022), "slope_mode": "computed"}
     assert params(db, 2) == {"slope": pytest.approx(0.022), "slope_mode": "computed"}
     assert db.startup_slope_report.updated == ["S › PK 100", "S › PK 300"]
     # Idempotent : rouvrir la base ne refait pas la migration.
     reopened = DatabaseManager(db_path=path)
-    assert len(reopened.get_hard_points(1)) == 2 and not reopened.startup_slope_report.message()
+    assert len(reopened.get_hard_points(1)) == 4 and not reopened.startup_slope_report.message()
 
 
 def test_migration_puts_impossible_profiles_in_imposed_slope(tmp_path):
@@ -247,7 +290,8 @@ def test_migration_keeps_an_incomplete_point_as_is(tmp_path):
 
     db = DatabaseManager(db_path=path)
 
-    assert [(p["name"], p["pk"], p["z"]) for p in db.get_hard_points(1)] == [("Pont", None, 51.0)]
+    for family in (EXISTING, PROJECT):
+        assert names_pks_zs(db.get_hard_points(1, family)) == [("Pont", None, 51.0)]
     assert params(db, 1) == {"slope": 0.01, "slope_mode": "imposed"}
     # Le point incomplet hérité peut rester tel quel lors d'une modification.
     db.set_hard_points(1, db.get_hard_points(1))
@@ -267,14 +311,18 @@ def test_project_export_import_keeps_hard_points_and_slope_modes(tmp_path):
     data = db.read_export_file(path)
     new_id = db.import_project(data)
 
-    assert data["version"] == 2
-    assert [(p["name"], p["pk"], p["z"]) for p in db.get_hard_points(new_id)] == [("A", 1000.0, 50.0), ("B", 1200.0, 46.0), ("C", 1400.0, 45.0)]
+    assert data["version"] == 3
+    for family in (EXISTING, PROJECT):
+        assert names_pks_zs(db.get_hard_points(new_id, family)) == [
+            ("A", 1000.0, 50.0), ("B", 1200.0, 46.0), ("C", 1400.0, 45.0)]
     imported = {p["name"]: p["id"] for p in next(x for x in db.get_all_projects() if x["id"] == new_id)["scenarios"][0]["profiles"]}
     assert params(db, imported["Calculée"]) == params(db, computed)
     assert params(db, imported["Imposée"]) == {"slope_mode": "imposed", "slope": 0.0123}
 
 
 def test_legacy_project_file_with_upstream_and_downstream_still_imports(tmp_path):
+    """Fichier de la version 1 (un seul lit) : ses points durs vont dans les deux familles,
+    la distance projet des profils est leur distance."""
     db = make_db(tmp_path)
     legacy = {
         "type": "project", "version": 1, "name": "Ancien",
@@ -286,8 +334,10 @@ def test_legacy_project_file_with_upstream_and_downstream_still_imports(tmp_path
 
     project_id = db.import_project(legacy)
 
-    assert [(p["name"], p["pk"], p["z"]) for p in db.get_hard_points(project_id)] == [("Amont", 0.0, 30.0), ("Aval", 100.0, 29.0)]
+    for family in (EXISTING, PROJECT):
+        assert names_pks_zs(db.get_hard_points(project_id, family)) == [("Amont", 0.0, 30.0), ("Aval", 100.0, 29.0)]
     profile_id = db.get_all_projects()[0]["scenarios"][0]["profiles"][0]["id"]
+    assert db.get_profile_distances(profile_id) == (50.0, 50.0)
     assert params(db, profile_id) == {"slope": pytest.approx(0.01), "slope_mode": "computed"}
 
 
@@ -324,7 +374,9 @@ def test_duplicate_project_copies_hard_points_and_slope_modes(tmp_path):
 
     new_id = db.duplicate_project(project_id, "Copie")
 
-    assert [(p["name"], p["pk"]) for p in db.get_hard_points(new_id)] == [("A", 1000.0), ("B", 1200.0), ("C", 1400.0)]
+    assert [(p["family"], p["name"], p["pk"]) for p in db.get_hard_points(new_id)] == [
+        (family, name, pk) for family in (EXISTING, PROJECT)
+        for name, pk in (("A", 1000.0), ("B", 1200.0), ("C", 1400.0))]
     copy = next(p for p in db.get_all_projects() if p["id"] == new_id)["scenarios"][0]["profiles"][0]
     assert params(db, copy["id"]) == {"slope_mode": "imposed", "slope": 0.0123}
 

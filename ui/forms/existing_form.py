@@ -7,6 +7,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QBrush, QColor, QKeySequence
 
 from ui import theme
+from ui.forms.distance_field import DistanceField
 
 
 class _PasteableTableWidget(QTableWidget):
@@ -75,6 +76,10 @@ class ExistingProfileForm(QWidget):
         header_layout.addWidget(self.lbl_hint)
 
         self.main_layout.addLayout(header_layout)
+
+        # Position du profil le long du lit existant (masquée pour un brouillon).
+        self.distance_field = DistanceField("Distance existante (m) :")
+        self.main_layout.addWidget(self.distance_field)
 
         # Tableau de saisie
         self.table = _PasteableTableWidget(0, 2, self)

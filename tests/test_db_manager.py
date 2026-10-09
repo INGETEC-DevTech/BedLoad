@@ -131,11 +131,21 @@ def test_profile_name_must_be_unique_per_scenario(tmp_path):
     scenario_id = make_scenario(db)
     db.create_profile(scenario_id, "Amont", 0.0)
 
-    with pytest.raises(ValueError):
-        db.rename_profile(
-            db.create_profile(scenario_id, "Aval", 100.0),
-            "Amont", 200.0,
-        )
+    with pytest.raises(ValueError, match="« Amont » existe déjà"):
+        db.rename_profile(db.create_profile(scenario_id, "Aval", 100.0), "Amont")
+
+
+def test_rename_profile_changes_only_its_name(tmp_path):
+    db = make_db(tmp_path)
+    scenario_id = make_scenario(db)
+    profile_id = db.create_profile(scenario_id, "Amont", 50.0)
+    db.set_profile_distance(profile_id, 80.0, "project")
+
+    db.rename_profile(profile_id, "Seuil")
+
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == [
+        {"id": profile_id, "name": "Seuil", "distance": 50.0}]
+    assert db.get_profile_distances(profile_id) == (50.0, 80.0)
 
 
 def test_profile_distance_must_be_unique_per_scenario(tmp_path):
@@ -319,7 +329,8 @@ def test_copied_scenario_is_independent_from_its_source(tmp_path):
 
     # Modifier la copie (données, nom/distance, suppression, ajout)...
     db.save_profile_state(copy_ids["PK 0"], [{"X (m)": 5.0, "Z (m NGF)": 50.0}], {"anchor_z": 1.0})
-    db.rename_profile(copy_ids["PK 150"], "PK 175", 175.0)
+    db.rename_profile(copy_ids["PK 150"], "PK 175")
+    db.set_profile_distance(copy_ids["PK 150"], 175.0)
     db.delete_profile(copy_ids["Seuil aval"])
     db.create_profile(copy, "Nouveau", 500.0)
 
@@ -714,7 +725,9 @@ def test_migration_to_scenarios_moves_uniqueness_to_scenario_level(tmp_path):
     with pytest.raises(ValueError):
         db.create_profile(default_scenario, "Autre nom", 100.0)
     with pytest.raises(ValueError):
-        db.rename_profile(4, "Test 1", 300.0)
+        db.rename_profile(4, "Test 1")
+    with pytest.raises(ValueError, match="déjà celle d'un autre profil"):
+        db.set_profile_distance(4, 100.0)  # distance existante de « Test 1 »
     # ...mais un autre scénario du même projet peut reprendre nom et distance.
     other = db.create_scenario(1, "Variante", source_scenario_id=default_scenario)
     assert [p["name"] for p in _profiles_by_name(db, other).values()] == ["Test 1", "test 2"]
@@ -925,7 +938,8 @@ def test_migration_adds_archived_column_and_keeps_every_project_active(tmp_path)
 
     assert [(p["id"], p["name"]) for p in db.get_all_projects()] == [(3, "Ancien"), (8, "Autre")]
     assert db.get_archived_projects() == []
-    assert hard_points(db, 3) == [{"name": "Seuil", "pk": 12.5, "z": 101.25}]
+    # Ancien point dur repris dans les deux familles (lits existant et projet).
+    assert hard_points(db, 3) == [{"name": "Seuil", "pk": 12.5, "z": 101.25}] * 2
     # Idempotent : rouvrir la base ne rajoute pas la colonne une seconde fois.
     DatabaseManager(db_path=db_path)
     columns = [r["name"] for r in raw_rows(db, "PRAGMA table_info(projects)")]
