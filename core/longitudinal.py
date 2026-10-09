@@ -117,3 +117,31 @@ def build_longitudinal_profile(
         ]
 
     return profile
+
+
+@dataclass
+class LongitudinalTableRow:
+    """Une ligne du tableau du profil en long (export Excel) : un profil en travers, avec
+    ses cotes existante et projet quand il les a, ou un point dur, avec sa cote."""
+    name: str
+    distance: float
+    z_existing: Optional[float] = None
+    z_project: Optional[float] = None
+    z_hard_point: Optional[float] = None
+
+
+def longitudinal_table(profile: LongitudinalProfile) -> List[LongitudinalTableRow]:
+    """Tableau du profil en long : une ligne par profil en travers et une par point dur,
+    triées par distance (à distance égale, le point dur d'abord), avec exactement les
+    valeurs du graphique. Une cote absente du graphique (profil sans existant ou sans
+    projet) vaut None."""
+    # Distance -> cote de chaque série : la distance identifie le profil (unique par scénario).
+    existing = dict(zip(profile.pk_existing, profile.z_existing))
+    project = dict(zip(profile.pk_project, profile.z_project))
+    rows = [LongitudinalTableRow(name=m.name, distance=m.distance, z_hard_point=m.z)
+            for m in profile.hard_points]
+    rows += [LongitudinalTableRow(name=name, distance=distance,
+                                  z_existing=existing.get(distance), z_project=project.get(distance))
+             for distance, name in profile.stations]
+    # Tri stable : les points durs, ajoutés en premier, restent devant à distance égale.
+    return sorted(rows, key=lambda row: row.distance)

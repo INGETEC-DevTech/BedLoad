@@ -1,6 +1,6 @@
 import pytest
 
-from core.longitudinal import build_longitudinal_profile, HardPointMarker
+from core.longitudinal import build_longitudinal_profile, longitudinal_table, HardPointMarker
 
 
 def test_build_longitudinal_profile_splits_both_series():
@@ -98,3 +98,40 @@ def test_stations_keep_every_profile_name_even_without_values():
     assert profile.names_existing == ["Amont", "100 m"]
     assert profile.names_project == ["100 m"]
 
+
+# --- Tableau du profil en long (export Excel) ---
+
+TABLE_HARD_POINTS = [{"name": "Pont", "pk": 1000.0, "z": 50.0}, {"name": "Seuil", "pk": 1150.0, "z": 48.0},
+                     {"name": None, "pk": 1300.0, "z": 46.5}]
+TABLE_ROWS = [(150.0, 47.9, 47.6, "PK 150"), (0.0, 49.8, None, "Amont"),
+              (80.0, None, 48.4, "PK 80"), (300.0, None, None, "Aval")]
+
+
+def test_table_interleaves_profiles_and_hard_points_by_distance():
+    """Une ligne par profil et par point dur, triées par distance ; à distance égale, le
+    point dur d'abord ; une cote absente vaut None."""
+    table = longitudinal_table(build_longitudinal_profile(TABLE_ROWS, TABLE_HARD_POINTS))
+
+    assert [(r.name, r.distance, r.z_existing, r.z_project, r.z_hard_point) for r in table] == [
+        ("Pont", 0.0, None, None, 50.0),
+        ("Amont", 0.0, 49.8, None, None),
+        ("PK 80", 80.0, None, 48.4, None),
+        ("Seuil", 150.0, None, None, 48.0),
+        ("PK 150", 150.0, 47.9, 47.6, None),
+        ("Point dur 3", 300.0, None, None, 46.5),
+        ("Aval", 300.0, None, None, None),
+    ]
+
+
+def test_table_values_are_exactly_those_of_the_chart():
+    from viz.plots import plot_longitudinal_profile
+    profile = build_longitudinal_profile(TABLE_ROWS, TABLE_HARD_POINTS)
+    traces = {t.name: t for t in plot_longitudinal_profile(profile).data}
+    table = longitudinal_table(profile)
+
+    def plotted(column):
+        return sorted((r.distance, getattr(r, column)) for r in table if getattr(r, column) is not None)
+
+    for column, trace in (("z_existing", "TN existant (thalweg)"), ("z_project", "Projet (fond de lit)"),
+                          ("z_hard_point", "Points durs")):
+        assert plotted(column) == sorted(zip(traces[trace].x, traces[trace].y))

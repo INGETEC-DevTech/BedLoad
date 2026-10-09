@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (QMainWindow, QSplitter, QWidget, QVBoxLayout, QTabW
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 
-from core.excel_export import export_project_profile
+from core.excel_export import export_longitudinal_profile, export_project_profile
+from core.longitudinal import build_longitudinal_profile
 from core.utils import LOGO_FILE_NAME, get_assets_dir
 from database.db_manager import DatabaseManager
 from ui.sidebar import Sidebar
@@ -44,6 +45,12 @@ class MainWindow(QMainWindow):
         # indispensable : les ids des deux tables se recoupent, et un brouillon ne doit
         # jamais être enregistré dans la table des profils (ni l'inverse).
         self._current_target = None
+        # Scénario dont le profil en long a été affiché en dernier : celui auquel s'applique
+        # la case « Échelle orthonormée » du graphique (visible sur ce seul profil en long).
+        self._longitudinal_scenario_id = None
+        # Données (lignes, points durs) du profil en long affiché, reprises telles quelles
+        # par son export Excel : mêmes valeurs que le graphique.
+        self._longitudinal_data = None
         
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.setCentralWidget(main_splitter)
@@ -202,6 +209,8 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.form_project.export_excel_requested.connect(self.export_project_excel)
         self.plot_view.expand_toggled.connect(self.toggle_plot_expanded)
+        self.plot_view.orthonormal_toggled.connect(self._save_longitudinal_orthonormal)
+        self.plot_view.excel_export_requested.connect(self.export_longitudinal_excel)
 
         # Rien n'est sélectionné au lancement.
         self.show_home()
@@ -431,9 +440,40 @@ class MainWindow(QMainWindow):
         earthworks = self.controller.station_earthworks(
             self.db_manager.get_scenario_profile_states(scenario_id)
         )
-        fig = build_longitudinal_figure(rows, hard_points, earthworks)
-        # Un zoom mémorisé par scénario, retrouvé au retour (cf. update_plot).
-        self.plot_view.update_plot(fig, view_key=f"scenario:{scenario_id}:longitudinal")
+        orthonormal = self.db_manager.get_longitudinal_orthonormal(scenario_id)
+        fig = build_longitudinal_figure(rows, hard_points, earthworks, orthonormal=orthonormal)
+        self._longitudinal_scenario_id = scenario_id
+        self._longitudinal_data = (rows, hard_points)
+        # Un zoom mémorisé par scénario, retrouvé au retour (cf. update_plot) ; chaque axe
+        # s'y étire seul, et la case « Échelle orthonormée » est affichée.
+        self.plot_view.update_plot(fig, view_key=f"scenario:{scenario_id}:longitudinal",
+                                   orthonormal=orthonormal)
+
+    def export_longitudinal_excel(self):
+        """Bouton "Exporter Excel" du profil en long : un tableau des profils en travers et
+        des points durs, construit comme le graphique affiché, dans un classeur choisi par
+        l'utilisateur. Le nom proposé reprend celui du graphique."""
+        if self._longitudinal_data is None:
+            return
+        base_name = re.sub(r'[\\/:*?"<>|]', "_", self.plot_view.export_name or "Profil en long")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter le profil en long", f"{base_name}.xlsx", "Classeur Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            export_longitudinal_profile(path, build_longitudinal_profile(*self._longitudinal_data))
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Export impossible",
+                f"Impossible d'écrire le fichier (est-il ouvert dans Excel ?)\n\n{e}",
+            )
+
+    def _save_longitudinal_orthonormal(self, orthonormal: bool):
+        """Case « Échelle orthonormée » cochée ou décochée : retenue pour le scénario dont
+        le profil en long est affiché (la case n'est visible que sur lui)."""
+        if self._longitudinal_scenario_id is not None:
+            self.db_manager.set_longitudinal_orthonormal(self._longitudinal_scenario_id, orthonormal)
 
     def save_and_update_plot(self, _=None):
         if self._current_target is None: return

@@ -149,11 +149,14 @@ class DatabaseManager:
 
             # Scénarios d'un projet : chacun possède sa propre liste de profils, totalement
             # indépendante de celle des autres scénarios du même projet.
+            # `longitudinal_orthonormal` (0/1) : case « Échelle orthonormée » de son profil
+            # en long, retrouvée à chaque affichage.
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS scenarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
+                    longitudinal_orthonormal INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
                     UNIQUE (project_id, name)
@@ -217,6 +220,8 @@ class DatabaseManager:
           ALTER TABLE, nullables : une base existante n'a simplement pas encore de
           points durs renseignés, à saisir/éditer depuis la sidebar), ni d'indicateur
           `archived` (même principe : colonne ajoutée, tous les projets restent actifs) ;
+        - `scenarios` n'avait pas l'état de la case « Échelle orthonormée » du profil en
+          long (colonne ajoutée, décochée pour tous les scénarios existants) ;
         - `profiles` identifiait chaque profil par un unique champ `pk_name`, à la fois
           nom affiché ET valeur de tri/position sur le profil en long. On le remplace
           par `name` (texte libre) et `distance` (numérique), chacun initialisé à
@@ -237,6 +242,13 @@ class DatabaseManager:
         # --- projects : ajoute l'indicateur d'archivage (les projets existants restent actifs) ---
         if "archived" not in project_columns:
             cursor.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+
+        # --- scenarios : ajoute l'état de la case « Échelle orthonormée » (décochée) ---
+        scenario_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(scenarios)")}
+        if "longitudinal_orthonormal" not in scenario_columns:
+            cursor.execute(
+                "ALTER TABLE scenarios ADD COLUMN longitudinal_orthonormal INTEGER NOT NULL DEFAULT 0"
+            )
 
         # --- profiles : remplace pk_name par name + distance. SQLite ne sait pas retirer
         # une contrainte UNIQUE par ALTER TABLE, donc on reconstruit la table (motif
@@ -801,6 +813,23 @@ class DatabaseManager:
                 conn.commit()
             except sqlite3.IntegrityError:
                 raise ValueError(f"Le scénario '{new_name}' existe déjà dans ce projet.")
+
+    def get_longitudinal_orthonormal(self, scenario_id: int) -> bool:
+        """Case « Échelle orthonormée » du profil en long du scénario : cochée ou non
+        (décochée pour un scénario introuvable)."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT longitudinal_orthonormal FROM scenarios WHERE id = ?", (scenario_id,)
+            ).fetchone()
+        return bool(row and row["longitudinal_orthonormal"])
+
+    def set_longitudinal_orthonormal(self, scenario_id: int, orthonormal: bool) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE scenarios SET longitudinal_orthonormal = ? WHERE id = ?",
+                (int(bool(orthonormal)), scenario_id),
+            )
+            conn.commit()
 
     def delete_scenario(self, scenario_id: int) -> None:
         """Supprime un scénario et tous ses profils (CASCADE). Les points durs, portés par

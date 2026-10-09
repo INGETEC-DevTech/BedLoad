@@ -139,10 +139,15 @@ def test_longitudinal_shows_each_profile_earthworks_on_hover_and_the_scenario_su
     assert balance_entry.name.startswith(f"Bilan : <b>{cut - fill:+.2f} m²</b>")
 
 
-def test_longitudinal_legend_is_framed_and_beside_the_chart():
-    fig = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0]))
-    assert fig.layout.legend.borderwidth == 1
-    assert fig.layout.legend.orientation == "v" and fig.layout.legend.x > 1
+def test_longitudinal_legend_sits_on_the_chart_top_right_over_a_see_through_background():
+    """Posée sur la zone de tracé (coordonnées entre 0 et 1), coin supérieur droit, au lieu
+    d'occuper une bande à droite ; encadrée, sur un fond blanc semi-transparent."""
+    legend = plot_longitudinal_profile(LongitudinalProfile(pk_existing=[0.0], z_existing=[10.0])).layout.legend
+    assert legend.orientation == "v" and legend.borderwidth == 1
+    assert 0 < legend.x <= 1 and legend.xanchor == "right"
+    assert 0 < legend.y <= 1 and legend.yanchor == "top"
+    alpha = float(legend.bgcolor.rstrip(")").split(",")[-1])
+    assert legend.bgcolor.startswith("rgba(255, 255, 255,") and 0 < alpha < 1
 
 
 def test_longitudinal_without_earthworks_has_no_earthworks_trace():

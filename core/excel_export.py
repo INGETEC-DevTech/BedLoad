@@ -1,15 +1,22 @@
 # core/excel_export.py
-"""Export Excel (.xlsx) du profil projet : les points calculés (nommés, X, Z) et les
-paramètres de géométrie qui les ont produits. Sans dépendance à Qt : la fenêtre
-principale se contente de demander le chemin et d'appeler export_project_profile."""
+"""Exports Excel (.xlsx) :
+- du profil projet : les points calculés (nommés, X, Z) et les paramètres de géométrie qui
+  les ont produits (export_project_profile) ;
+- du profil en long d'un scénario : profils en travers et points durs, par distance
+  (export_longitudinal_profile).
+Sans dépendance à Qt : la fenêtre principale se contente de demander le chemin et
+d'appeler la fonction d'export."""
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from core.geometry import build_project_cross_section
+from core.longitudinal import LongitudinalProfile, longitudinal_table
 from core.models import ProjectParameters
 
 # Paramètres de géométrie exportés : (clé, rubrique, libellé, unité), dans l'ordre et avec
@@ -100,5 +107,39 @@ def export_project_profile(path, project_params: Dict[str, Any],
     for sheet, widths in ((points_sheet, (6, 26, 12, 12)), (params_sheet, (28, 22, 14, 10))):
         for column, width in zip("ABCD", widths):
             sheet.column_dimensions[column].width = width
+
+    workbook.save(Path(path))
+
+
+# Colonnes du tableau du profil en long : (titre, largeur).
+_LONGITUDINAL_COLUMNS = (
+    ("Nom", 28), ("Distance (m)", 14), ("Z existant", 14), ("Z projet", 14), ("Z point dur", 14),
+)
+
+
+def export_longitudinal_profile(path, profile: LongitudinalProfile) -> None:
+    """Écrit dans `path` le profil en long tel que le graphique l'affiche (cf.
+    core.longitudinal.longitudinal_table) : une seule feuille, un seul tableau Excel
+    (filtrable), une ligne par profil en travers et par point dur, triées par distance. Une
+    cote absente laisse la case vide. Lève OSError si le fichier ne peut pas être écrit
+    (ex. déjà ouvert dans Excel)."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Profil en long"
+    sheet.append([title for title, _ in _LONGITUDINAL_COLUMNS])
+    rows = longitudinal_table(profile)
+    for row in rows:
+        sheet.append([row.name, row.distance, row.z_existing, row.z_project, row.z_hard_point])
+        for cell in sheet[sheet.max_row][1:]:
+            cell.number_format = _NUMBER_FORMAT
+
+    # Un tableau Excel couvre au moins une ligne de données, même vide.
+    last_column = get_column_letter(len(_LONGITUDINAL_COLUMNS))
+    table = Table(displayName="ProfilEnLong", ref=f"A1:{last_column}{max(len(rows), 1) + 1}")
+    table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    sheet.add_table(table)
+    sheet.freeze_panes = "A2"
+    for index, (_, width) in enumerate(_LONGITUDINAL_COLUMNS, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
 
     workbook.save(Path(path))

@@ -64,16 +64,18 @@ def build_longitudinal_figure(
     rows: List[Tuple[float, Optional[float], Optional[float]]],
     hard_points: Optional[List[Dict[str, Any]]] = None,
     earthworks: Optional[List[StationEarthworks]] = None,
+    orthonormal: bool = False,
 ) -> Optional[go.Figure]:
     """Profil en long d'un scénario à partir des triplets (distance, min_z_existant,
     anchor_z_projet) renvoyés par DatabaseManager.get_longitudinal_data, des points durs du
     projet (format DatabaseManager.get_hard_points) et des déblais / remblais de chaque
-    profil (cf. ProfileController.station_earthworks)."""
+    profil (cf. ProfileController.station_earthworks). `orthonormal` : 1 m en distance =
+    1 m en altitude (case « Échelle orthonormée » du scénario)."""
     profile = build_longitudinal_profile(rows, hard_points)
     if not profile.pk_existing and not profile.pk_project and not profile.hard_points:
         return None
     profile.earthworks = list(earthworks or [])
-    return plot_longitudinal_profile(profile)
+    return plot_longitudinal_profile(profile, orthonormal=orthonormal)
 
 
 def _existing_figure(existing_data: List[Dict[str, Any]]) -> Optional[go.Figure]:

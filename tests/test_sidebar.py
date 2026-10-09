@@ -413,12 +413,15 @@ class _FakePlotView(QWidget):
     fait tomber le processus en mode offscreen. On ne garde que ce que MainWindow utilise."""
 
     expand_toggled = pyqtSignal()
+    orthonormal_toggled = pyqtSignal(bool)
+    excel_export_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.lbl_title = QLabel()
         self.figures = []
         self.view_keys = []
+        self.orthonormal_states = []
         self.expanded = False
         self.export_caption = ""
 
@@ -428,9 +431,10 @@ class _FakePlotView(QWidget):
     def prepare_layout_change(self, then):
         then()
 
-    def update_plot(self, fig, error_message=None, view_key=None):
+    def update_plot(self, fig, error_message=None, view_key=None, orthonormal=None):
         self.figures.append((fig, error_message))
         self.view_keys.append(view_key)
+        self.orthonormal_states.append(orthonormal)
 
 
 @pytest.fixture
@@ -666,6 +670,72 @@ def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):
 
     assert main_window._current_target is None
     assert main_window.plot_view.lbl_title.text() == "Profil en long du scénario"
+
+
+def test_orthonormal_box_is_shown_on_the_longitudinal_only_and_remembered_per_scenario(main_window):
+    """La case n'existe que sur le profil en long (None ailleurs : masquée) ; la cocher
+    l'enregistre pour le scénario affiché, qui la retrouve (figure orthonormée comprise),
+    sans toucher aux autres scénarios."""
+    db = main_window.db_manager
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    other_id = db.create_scenario(project_id, "Autre")
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 50.0}, {"X (m)": 5.0, "Z (m NGF)": 49.0}],
+                          {"anchor_z": 48.5})
+    db.create_profile(other_id, "PK 0", 0.0)
+    main_window.sidebar.refresh_tree()
+    plot = main_window.plot_view
+
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    assert plot.orthonormal_states[-1] is False
+
+    plot.orthonormal_toggled.emit(True)
+    assert db.get_longitudinal_orthonormal(scenario_id) is True
+    assert db.get_longitudinal_orthonormal(other_id) is False
+
+    click(main_window.sidebar, (PROFILE, profile_id))
+    assert plot.orthonormal_states[-1] is None
+    click(main_window.sidebar, (SCENARIO, other_id))
+    assert plot.orthonormal_states[-1] is False
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    assert plot.orthonormal_states[-1] is True
+    fig, _ = plot.figures[-1]
+    assert fig.layout.yaxis.scaleanchor == "x"
+
+
+def test_longitudinal_excel_export_writes_the_values_of_the_displayed_chart(main_window, tmp_path, monkeypatch):
+    """Bouton "Exporter Excel" du profil en long : nom de fichier proposé d'après le
+    scénario, et dans le classeur exactement les cotes tracées."""
+    from openpyxl import load_workbook
+    db = main_window.db_manager
+    project_id = db.create_project("P")
+    db.set_hard_points(project_id, [{"name": "Pont", "pk": 0.0, "z": 50.0}, {"name": "Seuil", "pk": 400.0, "z": 46.0}])
+    scenario_id = db.create_scenario(project_id, "Base")
+    profile_id = db.create_profile(scenario_id, "PK 100", 100.0)
+    db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 49.0}, {"X (m)": 5.0, "Z (m NGF)": 48.25}],
+                          {"anchor_z": 48.75})
+    db.create_profile(scenario_id, "PK 250", 250.0)  # sans existant ni projet
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (SCENARIO, scenario_id))
+    path = tmp_path / "export.xlsx"
+    proposed = []
+
+    def fake_save(parent, title, name, filters):
+        proposed.append(name)
+        return str(path), ""
+    monkeypatch.setattr(sidebar_module.QFileDialog, "getSaveFileName", staticmethod(fake_save))
+
+    main_window.plot_view.excel_export_requested.emit()
+
+    assert proposed == ["Base - Profil en long.xlsx"]
+    rows = list(load_workbook(path)["Profil en long"].iter_rows(values_only=True))
+    assert rows[1:] == [("Pont", 0, None, None, 50), ("PK 100", 100, 48.25, 48.75, None),
+                        ("PK 250", 250, None, None, None), ("Seuil", 400, None, None, 46)]
+    fig, _ = main_window.plot_view.figures[-1]
+    traces = {t.name: t for t in fig.data}
+    assert list(zip(traces["TN existant (thalweg)"].x, traces["TN existant (thalweg)"].y)) == [(100.0, 48.25)]
+    assert list(zip(traces["Projet (fond de lit)"].x, traces["Projet (fond de lit)"].y)) == [(100.0, 48.75)]
 
 
 def test_scenario_longitudinal_carries_the_earthworks_of_its_profiles(main_window):

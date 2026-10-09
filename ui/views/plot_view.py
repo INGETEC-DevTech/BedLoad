@@ -10,7 +10,7 @@ from html import escape
 import plotly
 from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
+from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QCheckBox,
                              QFileDialog, QMessageBox)
 
 from ui import theme
@@ -48,6 +48,10 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 .cursor-overlay {{ position: absolute; z-index: 3; pointer-events: none; display: none; }}
                 #crosshair-v {{ width: 0; border-left: 1px dashed rgba(73, 80, 87, 0.45); }}
                 #crosshair-h {{ height: 0; border-top: 1px dashed rgba(73, 80, 87, 0.45); }}
+                /* Profil en long : curseur d'étirement au-dessus d'un axe (cf. axisUnder), qui
+                   l'emporte sur ceux que Plotly pose sur ses propres poignées d'axe. */
+                #graph.over-x-axis, #graph.over-x-axis * {{ cursor: ew-resize !important; }}
+                #graph.over-y-axis, #graph.over-y-axis * {{ cursor: ns-resize !important; }}
                 #cursor-readout {{ padding: 3px 8px; background: rgba(255, 255, 255, 0.92); border: 1px solid {theme.BORDER}; border-radius: {theme.RADIUS_SM}px; font-family: {theme.FONT_FAMILY}; font-size: {theme.FONT_SIZE_SM + 1}px; color: {theme.TEXT_SECONDARY}; white-space: pre; font-variant-numeric: tabular-nums; }}
             </style>
         </head>
@@ -153,10 +157,11 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     var span = Math.abs(b[1] - b[0]) || 1;
                     return Math.abs(a[0] - b[0]) < 1e-6 * span && Math.abs(a[1] - b[1]) < 1e-6 * span;
                 }}
-                function updateGraph(figData, viewKey, dataExtent) {{
+                function updateGraph(figData, viewKey, dataExtent, scaleAxesSeparately) {{
                     try {{
                         if (typeof Plotly === 'undefined') return;
                         var graphDiv = document.getElementById('graph');
+                        setFreeAxes(!!scaleAxesSeparately);
                         // Double-clic et bouton "Réinitialiser" : notre propre retour au cadrage
                         // par défaut (cf. resetToDefaultView) à la place de celui de Plotly.
                         var config = {{
@@ -199,6 +204,7 @@ def _build_page_html(plotly_js_filename: str) -> str:
                 function showEmptyState(msg) {{
                     rememberView();
                     currentViewKey = null;
+                    setFreeAxes(false);
                     hideCursorReadout();
                     document.getElementById('graph').style.display = 'none';
                     document.getElementById('empty-state-text').innerHTML = msg || 'Données insuffisantes pour tracer le profil.';
@@ -282,7 +288,7 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     if (!box || !evt || !('xaxis.range[0]' in evt || 'yaxis.range[0]' in evt)) return;
                     var gd = document.getElementById('graph');
                     var fl = gd._fullLayout;
-                    if (fl.yaxis.scaleanchor !== 'x') return;  // profil en long : zoom natif
+                    if (fl.yaxis.scaleanchor !== 'x') return;  // axes indépendants : zoom natif
                     var width = fl.xaxis._length, height = fl.yaxis._length;
                     var spanX = box.dx >= MIN_BOX_PX ? Math.abs(box.x1 - box.x0) : 0;
                     var spanY = box.dy >= MIN_BOX_PX ? Math.abs(box.y1 - box.y0) : 0;
@@ -336,6 +342,123 @@ def _build_page_html(plotly_js_filename: str) -> str:
                     }}
                     Plotly.relayout(gd, {{'xaxis.range': scaled(xr, cx), 'yaxis.range': scaled(yr, cy)}});
                 }}, {{passive: false}});
+
+                // --- Échelle de chaque axe (profil en long) ---
+                // Comme dans TradingView : glisser sur un axe étire (vers la droite, ou vers le
+                // haut) ou comprime (vers la gauche, ou vers le bas) cet axe seul, autour du
+                // centre de la vue, et la molette au-dessus d'un axe zoome sur lui seul, autour
+                // du curseur. Seulement quand Python le demande (profil en long, cf.
+                // updateGraph) : sur les profils en travers, les axes gardent le comportement
+                // de Plotly. En échelle orthonormée, l'autre axe suit du même facteur, pour
+                // garder 1 m en X = 1 m en Z. L'axe visé est reconnu dans toute sa marge
+                // (graduations et titre), plus large que les poignées d'axe de Plotly, qui ne
+                // reçoivent alors plus l'appui.
+                var freeAxes = false;
+                var AXIS_DRAG_PX = 150;   // glissement (px) qui étire ou comprime d'un facteur e (≈ 2.7)
+                var axisDrag = null;
+                function setFreeAxes(on) {{
+                    freeAxes = on;
+                    axisDrag = null;
+                    showAxisCursor(null);
+                }}
+                function showAxisCursor(axis) {{
+                    var gd = document.getElementById('graph');
+                    gd.classList.toggle('over-x-axis', axis === 'x');
+                    gd.classList.toggle('over-y-axis', axis === 'y');
+                }}
+                // 'x' ou 'y' si le curseur est dans la marge de cet axe (sous la zone de tracé
+                // pour les distances, à sa gauche pour les altitudes), sinon null.
+                function axisUnder(evt) {{
+                    var gd = document.getElementById('graph');
+                    var fl = gd._fullLayout;
+                    if (!freeAxes || !fl || !fl.xaxis || !fl.yaxis || gd.style.display === 'none') return null;
+                    var rect = gd.getBoundingClientRect();
+                    var px = evt.clientX - rect.left - fl.xaxis._offset;
+                    var py = evt.clientY - rect.top - fl.yaxis._offset;
+                    if (px >= 0 && px <= fl.xaxis._length && py > fl.yaxis._length) return 'x';
+                    if (py >= 0 && py <= fl.yaxis._length && px < 0) return 'y';
+                    return null;
+                }}
+                function middle(range) {{
+                    return (range[0] + range[1]) / 2;
+                }}
+                function scaledRange(range, factor, center) {{
+                    return [center + (range[0] - center) * factor, center + (range[1] - center) * factor];
+                }}
+                // Plages après avoir multiplié l'étendue de l'axe `axis` par `factor` (moins de 1 :
+                // étiré), autour de `center` ; en échelle orthonormée, l'autre axe suit, autour
+                // de son centre.
+                function axisScaleUpdate(fl, ranges, axis, factor, center) {{
+                    var orthonormal = fl.yaxis.scaleanchor === 'x';
+                    var update = {{}};
+                    if (axis === 'x' || orthonormal) {{
+                        update['xaxis.range'] = scaledRange(ranges.x, factor, axis === 'x' ? center : middle(ranges.x));
+                    }}
+                    if (axis === 'y' || orthonormal) {{
+                        update['yaxis.range'] = scaledRange(ranges.y, factor, axis === 'y' ? center : middle(ranges.y));
+                    }}
+                    return update;
+                }}
+                document.addEventListener('mousedown', function(evt) {{
+                    var axis = evt.button === 0 ? axisUnder(evt) : null;
+                    if (!axis) return;
+                    evt.stopPropagation();
+                    evt.preventDefault();
+                    pendingRestore = null;
+                    var fl = document.getElementById('graph')._fullLayout;
+                    var ranges = {{x: fl.xaxis.range.slice(), y: fl.yaxis.range.slice()}};
+                    axisDrag = {{axis: axis, clientX: evt.clientX, clientY: evt.clientY, ranges: ranges,
+                                center: middle(axis === 'x' ? ranges.x : ranges.y)}};
+                }}, true);
+                document.addEventListener('mousemove', function(evt) {{
+                    if (axisDrag && !(evt.buttons & 1)) axisDrag = null;  // relâché hors de la page
+                    if (axisDrag) {{
+                        var gd = document.getElementById('graph');
+                        var shift = axisDrag.axis === 'x' ? evt.clientX - axisDrag.clientX
+                                                          : axisDrag.clientY - evt.clientY;
+                        Plotly.relayout(gd, axisScaleUpdate(gd._fullLayout, axisDrag.ranges, axisDrag.axis,
+                                                            Math.exp(-shift / AXIS_DRAG_PX), axisDrag.center));
+                    }}
+                    showAxisCursor(axisDrag ? axisDrag.axis : axisUnder(evt));
+                }});
+                document.addEventListener('mouseup', function() {{
+                    axisDrag = null;
+                }}, true);
+                document.addEventListener('wheel', function(evt) {{
+                    if (evt.ctrlKey) return;  // Ctrl + molette : les deux axes (cf. plus haut)
+                    var axis = axisUnder(evt);
+                    if (!axis) return;
+                    evt.preventDefault();
+                    pendingRestore = null;
+                    var fl = document.getElementById('graph')._fullLayout;
+                    var at = plotCoords(evt);
+                    var ranges = {{x: fl.xaxis.range.slice(), y: fl.yaxis.range.slice()}};
+                    Plotly.relayout(document.getElementById('graph'), axisScaleUpdate(
+                        fl, ranges, axis, Math.pow(1.0015, evt.deltaY), axis === 'x' ? at.x : at.y));
+                }}, {{passive: false}});
+
+                // Case « Échelle orthonormée » du profil en long (cf. PlotView). Cochée : 1 m en
+                // X = 1 m en Z, quel que soit le zoom ; la plage horizontale affichée est gardée
+                // et la verticale recentrée à la même échelle (en cadrage automatique, tout le
+                // profil est cadré à cette échelle). Décochée : la vue affichée reste, les axes
+                // redeviennent indépendants.
+                function setOrthonormal(on) {{
+                    var gd = document.getElementById('graph');
+                    if (!gd._fullLayout || !gd.layout || gd.style.display === 'none') return;
+                    pendingRestore = null;
+                    var fl = gd._fullLayout;
+                    var update = {{'yaxis.scaleanchor': on ? 'x' : null, 'yaxis.scaleratio': on ? 1 : null}};
+                    if (gd.layout.xaxis.autorange !== true && gd.layout.yaxis.autorange !== true) {{
+                        var xr = fl.xaxis.range.slice(), yr = fl.yaxis.range.slice();
+                        if (on) {{
+                            var half = (xr[1] - xr[0]) / fl.xaxis._length * fl.yaxis._length / 2;
+                            yr = [middle(yr) - half, middle(yr) + half];
+                        }}
+                        update['xaxis.range'] = xr;
+                        update['yaxis.range'] = yr;
+                    }}
+                    Plotly.relayout(gd, update);
+                }}
 
                 // --- Coordonnées du curseur ---
                 // Réticule en tirets à travers la zone de tracé et cotes X / Z du point visé,
@@ -471,6 +594,11 @@ def _build_page_html(plotly_js_filename: str) -> str:
 class PlotView(QWidget):
     # Bouton "Agrandir" / "Réduire" : MainWindow masque ou réaffiche les panneaux voisins.
     expand_toggled = pyqtSignal()
+    # Case « Échelle orthonormée » cochée ou décochée par l'utilisateur (profil en long) :
+    # MainWindow l'enregistre pour le scénario affiché.
+    orthonormal_toggled = pyqtSignal(bool)
+    # Bouton "Exporter Excel" (profil en long) : MainWindow écrit le classeur.
+    excel_export_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -489,6 +617,17 @@ class PlotView(QWidget):
         self.header_layout.addWidget(self.lbl_title)
         
         self.header_layout.addStretch() 
+
+        # Profil en long seulement (cf. update_plot) : 1 m en distance = 1 m en altitude.
+        self.chk_orthonormal = QCheckBox("Échelle orthonormée")
+        self.chk_orthonormal.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chk_orthonormal.setToolTip("1 m en distance = 1 m en altitude, quel que soit le zoom.")
+        self.chk_orthonormal.setStyleSheet(theme.qss(
+            "QCheckBox { font-size: ${FONT_SIZE_BASE}px; color: $TEXT_SECONDARY; }"
+        ))
+        self.chk_orthonormal.setVisible(False)
+        self.chk_orthonormal.toggled.connect(self._on_orthonormal_toggled)
+        self.header_layout.addWidget(self.chk_orthonormal)
         
         button_style = theme.qss("""
             QPushButton { background-color: $SURFACE; color: $TEXT_SECONDARY; border: 1px solid $BORDER_INPUT; border-radius: ${RADIUS_MD}px; padding: ${SPACE_SM}px ${SPACE_MD}px; font-weight: bold; }
@@ -507,6 +646,18 @@ class PlotView(QWidget):
         self.btn_export.setToolTip("Enregistre le graphique affiché (zoom compris) en image PNG.")
         self.btn_export.clicked.connect(self.export_image)
         self.header_layout.addWidget(self.btn_export)
+
+        # Profil en long seulement (cf. update_plot), comme la case « Échelle orthonormée ».
+        self.btn_export_excel = QPushButton("📊 Exporter Excel")
+        self.btn_export_excel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_excel.setStyleSheet(button_style)
+        self.btn_export_excel.setToolTip(
+            "Profils en travers et points durs, triés par distance (Z existant, Z projet, "
+            "Z point dur), dans un fichier .xlsx."
+        )
+        self.btn_export_excel.setVisible(False)
+        self.btn_export_excel.clicked.connect(self.excel_export_requested.emit)
+        self.header_layout.addWidget(self.btn_export_excel)
         # Nom de fichier proposé à l'export (sans extension), mis à jour par MainWindow selon
         # ce qui est affiché.
         self.export_name = "graphique"
@@ -522,6 +673,7 @@ class PlotView(QWidget):
         self._is_ready = False
         self._pending_fig = None
         self._pending_view_key = None
+        self._pending_orthonormal = None
         self._has_figure = False
         # Export PNG en cours : chemin de destination et nombre de relances de l'attente.
         self._export_path = None
@@ -544,19 +696,26 @@ class PlotView(QWidget):
         # S'il y a un graphique en attente, on l'affiche. 
         # Sinon, on efface "Chargement..." pour afficher un texte d'accueil stylisé.
         if self._pending_fig is not None:
-            self.update_plot(self._pending_fig, view_key=self._pending_view_key)
+            self.update_plot(self._pending_fig, view_key=self._pending_view_key,
+                             orthonormal=self._pending_orthonormal)
             self._pending_fig = None
         else:
             self.browser.page().runJavaScript("showEmptyState('👈 Sélectionnez un scénario ou un profil pour commencer');")
 
-    def update_plot(self, fig, error_message: str = None, view_key: str = None):
+    def update_plot(self, fig, error_message: str = None, view_key: str = None,
+                    orthonormal: bool = None):
         """Affiche `fig` (ou un message si None). `view_key` identifie la vue affichée (ex.
         "profile:12:existing", "scenario:3:longitudinal") : le zoom de l'utilisateur sur
         cette vue est mémorisé et retrouvé quand il y revient après avoir affiché autre
-        chose. Sans clé, aucune mémoire."""
+        chose. Sans clé, aucune mémoire. `orthonormal` vaut True ou False pour le profil en
+        long : chaque axe s'y étire alors seul (cf. la page), et ses outils sont affichés —
+        la case « Échelle orthonormée », dans cet état, et le bouton "Exporter Excel" ; None
+        ailleurs (outils masqués)."""
+        self._show_longitudinal_tools(orthonormal if fig is not None else None)
         if not self._is_ready:
             self._pending_fig = fig
             self._pending_view_key = view_key
+            self._pending_orthonormal = orthonormal
             return
 
         self._has_figure = fig is not None
@@ -567,7 +726,27 @@ class PlotView(QWidget):
 
         fig_json = fig.to_json()
         extent = json.dumps(data_extent(fig))
-        self.browser.page().runJavaScript(f"updateGraph({fig_json}, {json.dumps(view_key)}, {extent});")
+        scale_axes_separately = json.dumps(orthonormal is not None)
+        self.browser.page().runJavaScript(
+            f"updateGraph({fig_json}, {json.dumps(view_key)}, {extent}, {scale_axes_separately});"
+        )
+
+    # --- Outils du profil en long : échelle orthonormée, export Excel ---
+
+    def _show_longitudinal_tools(self, orthonormal):
+        """Case cochée selon `orthonormal` et bouton "Exporter Excel", masqués tous deux
+        s'il vaut None. La case est réglée par le code : ce n'est pas un choix de
+        l'utilisateur, rien n'est signalé."""
+        self.chk_orthonormal.blockSignals(True)
+        self.chk_orthonormal.setChecked(bool(orthonormal))
+        self.chk_orthonormal.blockSignals(False)
+        self.chk_orthonormal.setVisible(orthonormal is not None)
+        self.btn_export_excel.setVisible(orthonormal is not None)
+
+    def _on_orthonormal_toggled(self, checked: bool):
+        if self._is_ready and self._has_figure:
+            self.browser.page().runJavaScript(f"setOrthonormal({json.dumps(checked)});")
+        self.orthonormal_toggled.emit(checked)
 
     # --- Agrandir / réduire ---
 

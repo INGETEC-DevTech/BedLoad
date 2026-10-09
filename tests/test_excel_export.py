@@ -1,7 +1,8 @@
 import pytest
 from openpyxl import load_workbook
 
-from core.excel_export import export_project_profile
+from core.excel_export import export_longitudinal_profile, export_project_profile
+from core.longitudinal import build_longitudinal_profile
 from core.geometry import build_project_cross_section
 from core.models import ProjectParameters
 
@@ -62,3 +63,48 @@ def test_invalid_geometry_raises_and_writes_nothing(tmp_path):
     with pytest.raises(ValueError, match="raccord gauche"):
         export_project_profile(path, params)
     assert not path.exists()
+
+
+# --- Profil en long ---
+
+def _longitudinal_sheet(path):
+    workbook = load_workbook(path)
+    assert workbook.sheetnames == ["Profil en long"]  # une seule feuille
+    return workbook["Profil en long"]
+
+
+def test_longitudinal_export_is_one_table_sorted_by_distance_with_empty_cells(tmp_path):
+    hard_points = [{"name": "Pont", "pk": 1000.0, "z": 50.0}, {"name": "Seuil", "pk": 1150.0, "z": 48.0}]
+    rows = [(150.0, 47.9, 47.6, "PK 150"), (0.0, 49.8, None, "Amont"), (80.0, None, 48.4, "PK 80")]
+    path = tmp_path / "profil_en_long.xlsx"
+
+    export_longitudinal_profile(path, build_longitudinal_profile(rows, hard_points))
+
+    sheet = _longitudinal_sheet(path)
+    assert [[c.value for c in row] for row in sheet.iter_rows()] == [
+        ["Nom", "Distance (m)", "Z existant", "Z projet", "Z point dur"],
+        ["Pont", 0, None, None, 50],
+        ["Amont", 0, 49.8, None, None],
+        ["PK 80", 80, None, 48.4, None],
+        ["Seuil", 150, None, None, 48],
+        ["PK 150", 150, 47.9, 47.6, None],
+    ]
+    assert list(sheet.tables) == ["ProfilEnLong"]  # un seul tableau, sur toutes les lignes
+    assert sheet.tables["ProfilEnLong"].ref == "A1:E6"
+
+
+def test_longitudinal_export_keeps_full_precision(tmp_path):
+    """Les valeurs écrites sont celles du graphique, sans arrondi (seul l'affichage l'est)."""
+    path = tmp_path / "precision.xlsx"
+    export_longitudinal_profile(path, build_longitudinal_profile([(12.3456789, 47.123456789, 46.987654321, "PK 12")]))
+
+    _, row = list(_longitudinal_sheet(path).iter_rows(values_only=True))
+    assert row == ("PK 12", 12.3456789, 47.123456789, 46.987654321, None)
+
+
+def test_longitudinal_export_without_any_row_is_still_a_valid_table(tmp_path):
+    path = tmp_path / "vide.xlsx"
+    export_longitudinal_profile(path, build_longitudinal_profile([]))
+
+    sheet = _longitudinal_sheet(path)
+    assert sheet.tables["ProfilEnLong"].ref == "A1:E2"

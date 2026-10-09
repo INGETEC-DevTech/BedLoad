@@ -23,6 +23,16 @@ def test_extent_ignores_missing_values_and_is_none_without_points():
     assert data_extent(go.Figure()) is None
 
 
+def test_longitudinal_profile_is_orthonormal_only_on_request():
+    profile = build_longitudinal_profile([(100.0, 48.0, 47.5)], HARD_POINTS)
+
+    free = plot_longitudinal_profile(profile)
+    orthonormal = plot_longitudinal_profile(profile, orthonormal=True)
+
+    assert free.layout.yaxis.scaleanchor is None
+    assert (orthonormal.layout.yaxis.scaleanchor, orthonormal.layout.yaxis.scaleratio) == ("x", 1)
+
+
 def test_extent_is_unchanged_when_an_inner_point_moves():
     """Modifier un profil sans changer l'étendue garde le zoom ; l'élargir le réinitialise."""
     rows = [(100.0, 48.0, 47.5), (200.0, 47.8, 47.2)]

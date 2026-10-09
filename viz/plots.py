@@ -26,6 +26,7 @@ STATION_LABEL_COLOR = "#495057" # gris foncé : nom de ces profils
 CUT_COLOR = "#d62728"        # rouge : déblai (terrain existant à enlever)
 FILL_COLOR = "#ff7f0e"       # orange : remblai (matériaux à ajouter)
 EARTHWORKS_LEGEND_GROUP = "earthworks"  # déblais / remblais du scénario (profil en long)
+LEGEND_OVERLAY_BACKGROUND = "rgba(255, 255, 255, 0.75)"  # légende posée sur le tracé
 GRID_COLOR = "#e3e6e9"       # grille principale
 MINOR_GRID_COLOR = "#f3f4f6" # grille secondaire, entre les graduations principales
 MINOR_GRID_DIVISIONS = 2     # intervalles de grille secondaire par intervalle principal
@@ -390,12 +391,12 @@ def _add_station_earthworks(fig: go.Figure, profile: LongitudinalProfile) -> Non
         )
 
 
-def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
+def plot_longitudinal_profile(profile: LongitudinalProfile, orthonormal: bool = False) -> go.Figure:
     """Profil en long d'un projet : TN existant (thalweg relevé) et fond de lit projet
     (anchor_z), chacun tracé en fonction de la distance au premier point dur. Contrairement
-    aux coupes transversales, les axes ne sont volontairement PAS orthonormés (cette
-    distance s'étend typiquement sur des centaines de mètres pour quelques mètres
-    d'altitude)."""
+    aux coupes transversales, les axes ne sont par défaut PAS orthonormés (cette distance
+    s'étend typiquement sur des centaines de mètres pour quelques mètres d'altitude) ;
+    `orthonormal` (case « Échelle orthonormée » du graphique) les rend orthonormés."""
     fig = go.Figure()
 
     # Profils en travers : un trait vertical discret à la position de chacun, et son nom
@@ -473,14 +474,16 @@ def plot_longitudinal_profile(profile: LongitudinalProfile) -> go.Figure:
     fig.update_layout(xaxis_title=dict(
         text="Distance au premier point dur (m)", font=dict(size=12, color="#6c757d")
     ))
-    # On annule l'échelle orthonormée héritée de _apply_common_layout : non pertinente ici.
-    fig.update_yaxes(scaleanchor=None, scaleratio=None)
-    # Légende verticale à droite du graphique : elle compte plus d'entrées que sur les
-    # profils en travers (dont le groupe des déblais / remblais) et, au-dessus du graphique,
-    # elle s'étalait sur plusieurs lignes jusqu'à recouvrir le titre.
+    # Échelle orthonormée héritée de _apply_common_layout : seulement si elle est demandée.
+    if not orthonormal:
+        fig.update_yaxes(scaleanchor=None, scaleratio=None)
+    # Légende verticale posée sur le graphique, en haut à droite, sur un fond semi-transparent
+    # (LEGEND_OVERLAY_BACKGROUND) : elle compte plus d'entrées que sur les profils en travers
+    # (dont le groupe des déblais / remblais) et, au-dessus du graphique, elle s'étalait sur
+    # plusieurs lignes jusqu'à recouvrir le titre ; à droite, elle réduisait la zone de tracé.
     fig.update_layout(legend=dict(
-        orientation="v", x=1.01, xanchor="left", y=1, yanchor="top",
-        tracegroupgap=12,
+        orientation="v", x=0.99, xanchor="right", y=0.99, yanchor="top",
+        bgcolor=LEGEND_OVERLAY_BACKGROUND, tracegroupgap=12,
     ))
 
     return fig

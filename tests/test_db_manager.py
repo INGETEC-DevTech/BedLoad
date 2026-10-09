@@ -764,6 +764,62 @@ def test_fresh_database_schema_has_expected_tables(tmp_path):
     assert "scenario_id" in profile_columns and "project_id" not in profile_columns
 
 
+# --- Case « Échelle orthonormée » du profil en long ---
+
+def test_longitudinal_orthonormal_is_remembered_per_scenario_across_reopenings(tmp_path):
+    db = make_db(tmp_path)
+    project_id = db.create_project("P")
+    checked = db.create_scenario(project_id, "Coché")
+    other = db.create_scenario(project_id, "Autre")
+    assert db.get_longitudinal_orthonormal(checked) is False  # décochée par défaut
+
+    db.set_longitudinal_orthonormal(checked, True)
+
+    reopened = DatabaseManager(db_path=db.db_path)  # réouverture de l'appli
+    assert reopened.get_longitudinal_orthonormal(checked) is True
+    assert reopened.get_longitudinal_orthonormal(other) is False
+    assert reopened.get_longitudinal_orthonormal(999) is False
+    reopened.set_longitudinal_orthonormal(checked, False)
+    assert reopened.get_longitudinal_orthonormal(checked) is False
+
+
+def test_migration_adds_the_orthonormal_column_unchecked_and_keeps_scenarios(tmp_path):
+    """Base de la version précédente (table `scenarios` sans la colonne) : la colonne est
+    ajoutée, décochée partout ; ids, noms et profils des scénarios sont conservés."""
+    db = make_db(tmp_path)
+    scenario_id = make_scenario(db, "Rivière", "Base")
+    db.create_scenario(db.get_scenario_project_id(scenario_id), "Variante")
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
+    conn = sqlite3.connect(db.db_path)
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE scenarios_old (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+            UNIQUE (project_id, name)
+        );
+        INSERT INTO scenarios_old (id, project_id, name, created_at)
+            SELECT id, project_id, name, created_at FROM scenarios;
+        DROP TABLE scenarios;
+        ALTER TABLE scenarios_old RENAME TO scenarios;
+    """)
+    conn.close()
+    before = raw_rows(db, "SELECT id, project_id, name, created_at FROM scenarios ORDER BY id")
+    assert "longitudinal_orthonormal" not in {r["name"] for r in raw_rows(db, "PRAGMA table_info(scenarios)")}
+
+    migrated = DatabaseManager(db_path=db.db_path)
+    DatabaseManager(db_path=db.db_path)  # une deuxième ouverture ne change rien
+
+    assert raw_rows(migrated, "SELECT id, project_id, name, created_at FROM scenarios ORDER BY id") == before
+    assert [r["longitudinal_orthonormal"] for r in raw_rows(migrated, "SELECT * FROM scenarios")] == [0, 0]
+    assert migrated.get_all_projects()[0]["scenarios"][0]["profiles"][0]["id"] == profile_id
+    migrated.set_longitudinal_orthonormal(scenario_id, True)
+    assert migrated.get_longitudinal_orthonormal(scenario_id) is True
+
+
 # --- Archivage des projets ---
 
 def test_archived_project_leaves_the_tree_and_is_listed_in_archives(tmp_path):
