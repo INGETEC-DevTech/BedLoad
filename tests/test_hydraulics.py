@@ -23,7 +23,7 @@ def get_water_intersections(section, water_z, bounds=None):
         return None, None
     return beds[0][0].x, beds[-1][-1].x
 from core.models import CrossSection, Point, dataframe_to_points
-from core.controller import format_discharge
+from viz.figures import format_discharge
 from core.geometry import build_project_cross_section
 from core.models import ProjectParameters
 
@@ -569,10 +569,10 @@ TWO_BEDS_POINTS = [
 
 
 def _hydraulics_figure(**hydro):
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 1.0,
             "slope": 0.001, "ks_pro": 30.0, **hydro}
-    return ProfileController().build_figure(TWO_BEDS_POINTS, data, ViewMode.HYDRAULICS)
+    return build_figure(TWO_BEDS_POINTS, data, ViewMode.HYDRAULICS)
 
 
 def _results_text(fig):
@@ -608,9 +608,9 @@ def _greyed_out(fig):
 
 
 def _project_figure(params, **hydro):
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     data = {**asdict(params), "hydro_source": "project", "slope": 0.001, "ks_pro": 30.0, **hydro}
-    return ProfileController().build_figure([], data, ViewMode.HYDRAULICS)
+    return build_figure([], data, ViewMode.HYDRAULICS)
 
 
 def test_project_hydraulics_draws_the_dividers_and_details_each_wet_part():
@@ -726,13 +726,13 @@ def test_hydraulics_inconsistent_bounds_raise_a_readable_error():
 def test_existing_source_depth_is_measured_from_the_bottom_of_the_chosen_bed():
     """Lit de droite relevé de 0.5 m : avec les limites sur ce lit, "h = 1 m" doit donner une
     cote d'eau à 1.5 (fond du lit choisi + 1), pas 1.0 (fond de l'autre lit + 1)."""
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     points = [{"X (m)": p["X (m)"], "Z (m NGF)": p["Z (m NGF)"] + (0.5 if p["X (m)"] >= 7 else 0)}
               for p in TWO_BEDS_POINTS]
     data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 1.0, "slope": 0.001,
             "ks_pro": 30.0, "hydro_bounds_enabled": True, "hydro_x_left": 6.0, "hydro_x_right": 13.0}
 
-    fig = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+    fig = build_figure(points, data, ViewMode.HYDRAULICS)
 
     assert list(_water_trace(fig).y) == pytest.approx([1.5, 1.5])
 
@@ -778,13 +778,13 @@ def test_single_arm_above_the_crest_keeps_the_water_in_that_arm():
     """Berges extérieures à z=5, île à z=3, eau à z=3.5 : sans choix, l'île est submergée et
     les deux bras ne forment plus qu'une seule nappe ; avec "bras gauche seul", la
     séparation fait paroi et l'eau reste dans le bras gauche."""
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     points = [{"X (m)": x, "Z (m NGF)": z}
               for x, z in [(0, 5), (1, 0), (4, 0), (5, 2), (6, 3), (7, 2), (8, 0), (11, 0), (12, 5)]]
     data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 3.5, "slope": 0.001, "ks_pro": 30.0}
 
-    merged = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
-    left = ProfileController().build_figure(
+    merged = build_figure(points, data, ViewMode.HYDRAULICS)
+    left = build_figure(
         points, {**data, "hydro_zone": "left_arm", "hydro_arm_split_x": 6.0}, ViewMode.HYDRAULICS)
 
     assert list(_water_trace(merged).x) == pytest.approx([0.3, 11.7])
@@ -798,13 +798,13 @@ def test_arm_split_outside_the_profile_raises_a_readable_error():
 
 def test_single_arm_depth_is_measured_from_the_bottom_of_that_arm():
     """Bras droit relevé de 0.5 m : en "bras droit seul", h = 1 m donne une cote d'eau à 1.5."""
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     points = [{"X (m)": p["X (m)"], "Z (m NGF)": p["Z (m NGF)"] + (0.5 if p["X (m)"] >= 7 else 0)}
               for p in TWO_BEDS_POINTS]
     data = {"hydro_source": "existing", "calc_mode": "Q_FROM_H", "h_eau": 1.0, "slope": 0.001,
             "ks_pro": 30.0, "hydro_zone": "right_arm", "hydro_arm_split_x": 6.0}
 
-    fig = ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+    fig = build_figure(points, data, ViewMode.HYDRAULICS)
 
     assert list(_water_trace(fig).y) == pytest.approx([1.5, 1.5])
 
@@ -832,9 +832,9 @@ LOW_RIGHT_END = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(0, 3), (1, 0), (4, 0
 
 
 def _figure(points, **hydro):
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     data = {"hydro_source": "existing", "slope": 0.001, "ks_pro": 30.0, **hydro}
-    return ProfileController().build_figure(points, data, ViewMode.HYDRAULICS)
+    return build_figure(points, data, ViewMode.HYDRAULICS)
 
 
 def test_imposed_h_above_a_profile_end_shows_an_overflow_warning():
@@ -911,6 +911,62 @@ def test_imposed_q_beyond_capacity_shows_a_warning():
 ])
 def test_no_warning_when_the_water_stays_inside_the_profile(hydro):
     assert _overflow_warning_text(_figure(LOW_RIGHT_END, **hydro)) is None
+
+
+def test_overflow_warning_uses_the_theme_warning_color():
+    """Une seule couleur d'avertissement, celle du thème (aussi utilisée par le
+    récapitulatif du projet)."""
+    from ui import theme
+    fig = _figure(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=2.0)
+
+    warning = next(a for a in fig.layout.annotations if "⚠" in (a.text or ""))
+    assert warning.bordercolor == warning.font.color == theme.WARNING
+    assert f'<span style="color:{theme.WARNING}"><b>Débit (Q) : non calculable' in _results_text(fig)
+
+
+# --- Diagnostic de débordement : une donnée de calcul, sans texte ni couleur ---
+
+def _solution(points, **hydro):
+    from core.controller import ProfileController
+    data = {"hydro_source": "existing", "slope": 0.001, "ks_pro": 30.0, **hydro}
+    return ProfileController().solve_hydraulics(points, data, data)
+
+
+def _low_right_end_capacity():
+    section = CrossSection("s", [Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in LOW_RIGHT_END])
+    return compute_hydraulic_params(section, 1.5, 0.001, 30.0)["Q"]
+
+
+def test_overflow_diagnosis_gives_the_overflowing_end_and_the_capacity():
+    from core.controller import OVERFLOW, ProfileController
+
+    diagnosis = ProfileController.overflow_diagnosis(_solution(LOW_RIGHT_END, calc_mode="Q_FROM_H", h_eau=2.0))
+
+    assert diagnosis.kind == OVERFLOW
+    assert diagnosis.end_levels == {"right": pytest.approx(1.5)}
+    assert diagnosis.level == pytest.approx(1.5)
+    assert diagnosis.q_max == pytest.approx(_low_right_end_capacity())
+
+
+def test_overflow_diagnosis_flags_a_target_discharge_beyond_the_capacity():
+    from core.controller import TARGET_NOT_REACHED, ProfileController
+    capacity = _low_right_end_capacity()
+
+    diagnosis = ProfileController.overflow_diagnosis(
+        _solution(LOW_RIGHT_END, calc_mode="H_FROM_Q", q_target=capacity * 3))
+
+    assert diagnosis.kind == TARGET_NOT_REACHED and diagnosis.end_levels == {}
+    assert (diagnosis.level, diagnosis.q_max) == (pytest.approx(1.5), pytest.approx(capacity))
+
+
+@pytest.mark.parametrize("hydro", [
+    dict(calc_mode="Q_FROM_H", h_eau=1.0),
+    dict(calc_mode="H_FROM_Q", q_target=0.5),
+])
+def test_overflow_diagnosis_is_none_when_the_water_stays_inside(hydro):
+    from core.controller import ProfileController
+
+    assert ProfileController.overflow_diagnosis(_solution(LOW_RIGHT_END, **hydro)) is None
 
 
 # Débit cible juste au-dessus de la capacité d'un petit fossé (≈ 0.03 m³/s) et d'une grande
@@ -996,12 +1052,13 @@ def _ranges(fig):
 def test_hydraulics_overlay_frames_both_profiles_and_the_water_line():
     """Projet étroit (X ~ -6 à 14) sur un terrain large (X = -10 à 40) : le cadrage par défaut
     englobe les deux profils en entier et la ligne d'eau, avec 1 m de marge."""
-    from core.controller import ProfileController, ViewMode
+    from core.controller import ProfileController
+    from viz.figures import ViewMode, build_figure
     ctrl = ProfileController()
     params = {**ctrl.default_project_params(), "anchor_x": 3.0, "anchor_z": 47.0,
               "hydro_source": "project", "calc_mode": "Q_FROM_H", "h_eau": 1.2, "slope": 0.003}
 
-    fig = ctrl.build_figure(WIDE_EXISTING, params, ViewMode.HYDRAULICS, show_overlay=True)
+    fig = build_figure(WIDE_EXISTING, params, ViewMode.HYDRAULICS, show_overlay=True)
 
     (x0, x1), (z0, z1) = _ranges(fig)
     every_x = [x for t in fig.data if t.x for x in t.x if x is not None]
@@ -1014,7 +1071,8 @@ def test_hydraulics_overlay_frames_both_profiles_and_the_water_line():
 
 def test_project_tab_overlay_still_frames_the_project_only():
     """Onglet Profil projet : cadrage inchangé, sur le seul profil projet (objet de la saisie)."""
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
+    from core.controller import ProfileController
     from core.geometry import build_project_cross_section
     from core.models import ProjectParameters
     ctrl = ProfileController()
@@ -1023,6 +1081,6 @@ def test_project_tab_overlay_still_frames_the_project_only():
                                                                if k in ProjectParameters.__dataclass_fields__}))
     xs, zs = project.to_arrays()
 
-    fig = ctrl.build_figure(WIDE_EXISTING, params, ViewMode.PROJECT, show_overlay=True)
+    fig = build_figure(WIDE_EXISTING, params, ViewMode.PROJECT, show_overlay=True)
 
     assert _ranges(fig) == (pytest.approx((min(xs) - 1, max(xs) + 1)), pytest.approx((min(zs) - 1, max(zs) + 1)))

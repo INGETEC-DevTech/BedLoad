@@ -95,9 +95,9 @@ def test_tree_shows_projects_scenarios_profiles_then_draft_zone(sidebar, db):
     project_id = db.create_project("Rivière")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    db.create_or_get_profile(scenario_a, "PK 300", 300.0)
-    db.create_or_get_profile(scenario_a, "PK 100", 100.0)
-    db.create_or_get_profile(scenario_b, "PK 300", 300.0)
+    db.create_profile(scenario_a, "PK 300", 300.0)
+    db.create_profile(scenario_a, "PK 100", 100.0)
+    db.create_profile(scenario_b, "PK 300", 300.0)
     db.create_draft("Essai")
 
     sidebar.refresh_tree()
@@ -134,7 +134,7 @@ def test_new_nodes_are_expanded_and_expansion_survives_refresh(sidebar, db):
 def test_clicks_emit_the_signal_of_each_node_type(sidebar, db):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     draft_id = db.create_draft("Essai")
     sidebar.refresh_tree()
     signals = {
@@ -164,7 +164,7 @@ def test_active_path_marks_parents_of_selected_profile(sidebar, db):
     project_id = db.create_project("P")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    profile_id = db.create_or_get_profile(scenario_a, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_a, "PK 0", 0.0)
     sidebar.refresh_tree()
 
     click(sidebar, (PROFILE, profile_id))
@@ -179,7 +179,7 @@ def test_active_path_marks_parents_of_selected_profile(sidebar, db):
 def test_deleting_the_open_item_or_a_parent_clears_the_selection(sidebar, db):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     sidebar.refresh_tree()
     cleared = record(sidebar.selection_cleared)
 
@@ -194,8 +194,8 @@ def test_deleting_the_open_item_or_a_parent_clears_the_selection(sidebar, db):
 def test_deleting_an_unrelated_item_keeps_the_selection(sidebar, db):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    kept = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
-    other = db.create_or_get_profile(scenario_id, "PK 100", 100.0)
+    kept = db.create_profile(scenario_id, "PK 0", 0.0)
+    other = db.create_profile(scenario_id, "PK 100", 100.0)
     sidebar.refresh_tree()
     cleared = record(sidebar.selection_cleared)
 
@@ -211,7 +211,7 @@ def test_deleting_an_unrelated_item_keeps_the_selection(sidebar, db):
 def test_renaming_the_open_scenario_updates_the_context(sidebar, db):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     sidebar.refresh_tree()
     changed = record(sidebar.context_changed)
     click(sidebar, (PROFILE, profile_id))
@@ -250,6 +250,33 @@ def test_add_profile_goes_to_the_selected_scenario(sidebar, db, monkeypatch):
     scenarios = db.get_all_projects()[0]["scenarios"]
     assert scenarios[0]["profiles"] == []
     assert [p["name"] for p in scenarios[1]["profiles"]] == ["PK 300"]
+
+
+def test_add_profile_with_a_taken_name_warns_and_asks_the_name_again(sidebar, db, monkeypatch):
+    """Nom déjà pris dans le scénario : message, puis nom redemandé pré-rempli, avant toute
+    saisie de distance. L'existant n'est ni ouvert ni modifié."""
+    project_id = db.create_project("P")
+    scenario_id = db.create_scenario(project_id, "S")
+    existing_id = db.create_profile(scenario_id, "PK 300", 300.0)
+    sidebar.refresh_tree()
+    prefilled, names = [], ["PK 300", "PK 400"]
+
+    def fake_get_text(parent, title, label, text=""):
+        prefilled.append(text)
+        return names.pop(0), True
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(fake_get_text))
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(lambda *a, **k: (400.0, True)))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[1:3])))
+    opened = record(sidebar.profile_selected)
+
+    sidebar.add_profile_to_scenario(scenario_id, project_id)
+
+    assert warnings == [("Nom déjà pris", "Le profil « PK 300 » existe déjà dans ce scénario : choisissez un autre nom.")]
+    assert prefilled == ["", "PK 300"]
+    profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
+    assert [(p["name"], p["distance"]) for p in profiles] == [("PK 300", 300.0), ("PK 400", 400.0)]
+    assert opened and opened[0][0] != existing_id
 
 
 def test_add_profile_on_project_with_several_scenarios_asks_to_choose(sidebar, db, monkeypatch):
@@ -303,8 +330,8 @@ class _FakeScenarioDialog:
 def test_create_scenario_keeping_profiles_of_an_existing_one(sidebar, db, monkeypatch):
     project_id = db.create_project("P")
     source = db.create_scenario(project_id, DEFAULT_SCENARIO_NAME)
-    db.create_or_get_profile(source, "PK 0", 0.0)
-    db.create_or_get_profile(source, "PK 300", 300.0)
+    db.create_profile(source, "PK 0", 0.0)
+    db.create_profile(source, "PK 300", 300.0)
     sidebar.refresh_tree()
     click(sidebar, (SCENARIO, source))
     monkeypatch.setattr(sidebar_module, "ScenarioDialog", _FakeScenarioDialog)
@@ -324,7 +351,7 @@ def test_create_scenario_keeping_profiles_of_an_existing_one(sidebar, db, monkey
 def test_duplicate_scenario_preselects_it_as_source(sidebar, db, monkeypatch):
     project_id = db.create_project("P")
     source = db.create_scenario(project_id, "A")
-    db.create_or_get_profile(source, "PK 0", 0.0)
+    db.create_profile(source, "PK 0", 0.0)
     sidebar.refresh_tree()
     monkeypatch.setattr(sidebar_module, "ScenarioDialog", _FakeScenarioDialog)
     _FakeScenarioDialog.answer = ("A - copie", source)
@@ -421,7 +448,7 @@ def main_window(qapp, tmp_path, monkeypatch):
 def test_editing_a_draft_never_touches_the_profile_with_the_same_id(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     profile_state = ([{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}], {"anchor_z": 0.2})
     db.save_profile_state(profile_id, *profile_state)
     draft_id = db.create_draft("Essai")
@@ -451,7 +478,7 @@ def test_each_profile_draft_and_tab_gets_its_own_view_key(main_window):
     scénario pour son profil en long."""
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     draft_id = db.create_draft("Essai")
     assert draft_id == profile_id
     points = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
@@ -484,7 +511,7 @@ def test_export_excel_button_writes_the_open_profile(main_window, monkeypatch, t
     from openpyxl import load_workbook
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     db.save_profile_state(profile_id, [], {"bed_width": 3.25})
     main_window.sidebar.refresh_tree()
     click(main_window.sidebar, (PROFILE, profile_id))
@@ -504,7 +531,7 @@ def test_export_excel_button_writes_the_open_profile(main_window, monkeypatch, t
 def test_export_image_name_follows_what_is_displayed(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 120", 120.0)
+    profile_id = db.create_profile(scenario_id, "PK 120", 120.0)
     db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}], {})
     main_window.sidebar.refresh_tree()
 
@@ -519,7 +546,7 @@ def test_export_image_name_follows_what_is_displayed(main_window):
 def test_exported_image_caption_names_project_scenario_and_profile(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 120", 120.0)
+    profile_id = db.create_profile(scenario_id, "PK 120", 120.0)
     db.save_profile_state(profile_id, POINTS_2, {})
     main_window.sidebar.refresh_tree()
 
@@ -533,7 +560,7 @@ def test_exported_image_caption_names_project_scenario_and_profile(main_window):
 def test_expanding_the_plot_hides_the_panels_and_restores_them(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     main_window.sidebar.refresh_tree()
     click(main_window.sidebar, (PROFILE, profile_id))
     sizes = main_window._work_splitter.sizes()
@@ -577,7 +604,7 @@ def test_each_background_profile_box_keeps_its_own_value_after_a_round_trip(main
     écrasait celle du Profil projet à l'enregistrement)."""
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     db.save_profile_state(profile_id, POINTS_2, {})
     main_window.sidebar.refresh_tree()
     click(main_window.sidebar, (PROFILE, profile_id))
@@ -612,7 +639,7 @@ def test_background_profile_boxes_are_kept_for_drafts_too(main_window):
 def test_profile_saved_with_the_old_shared_key_initialises_both_boxes(main_window, legacy_value):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     db.save_profile_state(profile_id, POINTS_2, {"show_overlay": legacy_value})
     main_window.sidebar.refresh_tree()
 
@@ -631,7 +658,7 @@ def test_project_and_hydraulics_forms_share_no_saved_key(main_window):
 def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     main_window.sidebar.refresh_tree()
 
     click(main_window.sidebar, (PROFILE, profile_id))
@@ -644,7 +671,7 @@ def test_scenario_click_shows_longitudinal_and_stops_editing(main_window):
 def test_scenario_longitudinal_carries_the_earthworks_of_its_profiles(main_window):
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     existing = [{"X (m)": x, "Z (m NGF)": z} for x, z in [(-5, 52), (0, 49), (5, 48), (10, 49), (20, 52)]]
     db.save_profile_state(profile_id, existing, {"anchor_z": 48.5})
     main_window.sidebar.refresh_tree()
@@ -660,7 +687,7 @@ def test_project_click_shows_its_summary_and_a_scenario_click_leaves_it(main_win
     db = main_window.db_manager
     project_id = db.create_project("Rivière X")
     scenario_id = db.create_scenario(project_id, "Base")
-    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.create_profile(scenario_id, "PK 0", 0.0)
     main_window.sidebar.refresh_tree()
 
     click(main_window.sidebar, (PROJECT, project_id))
@@ -692,7 +719,7 @@ def test_profile_saved_with_legacy_excel_parameters_still_opens(main_window):
     encore présents dans d'anciens profils enregistrés."""
     db = main_window.db_manager
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     legacy = {"d50": 0.004, "x_end_profile_left": 0.1, "x_end_profile_right": 11.0,
               "x_end_equals_profile_width": False, "x_end_rd": 11.0, "keep_existing_slope": False,
               "delete_point_left_bank": False, "delete_point_right_bank": True}
@@ -804,7 +831,7 @@ def test_home_page_follows_deletions_and_archiving(main_window):
 
 def test_export_profile_item_writes_a_profile_file(sidebar, db, tmp_path, monkeypatch):
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 1.0}], {"anchor_z": 0.5})
     sidebar.refresh_tree()
     path = tmp_path / "export.json"
@@ -847,7 +874,7 @@ def test_export_scenario_and_project_items_write_matching_types(sidebar, db, tmp
 def test_import_file_profile_routes_to_the_chosen_scenario(sidebar, db, tmp_path, monkeypatch):
     other_project = db.create_project("Autre projet")
     other_scenario = db.create_scenario(other_project, "Source")
-    profile_id = db.create_or_get_profile(other_scenario, "PK 0", 0.0)
+    profile_id = db.create_profile(other_scenario, "PK 0", 0.0)
     db.save_profile_state(profile_id, [{"X (m)": 1.0, "Z (m NGF)": 2.0}], {"anchor_z": 1.5})
     path = tmp_path / "profile.json"
     db.export_profile_to_file(profile_id, path)
@@ -869,7 +896,7 @@ def test_import_file_profile_routes_to_the_chosen_scenario(sidebar, db, tmp_path
 
 def test_import_file_profile_routes_to_draft_zone(sidebar, db, tmp_path, monkeypatch):
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     path = tmp_path / "profile.json"
     db.export_profile_to_file(profile_id, path)
     sidebar.refresh_tree()
@@ -884,7 +911,7 @@ def test_import_file_profile_routes_to_draft_zone(sidebar, db, tmp_path, monkeyp
 def test_import_file_scenario_routes_to_the_chosen_project(sidebar, db, tmp_path, monkeypatch):
     source_project = db.create_project("Source")
     source_scenario = db.create_scenario(source_project, "Variante")
-    db.create_or_get_profile(source_scenario, "PK 0", 0.0)
+    db.create_profile(source_scenario, "PK 0", 0.0)
     path = tmp_path / "scenario.json"
     db.export_scenario_to_file(source_scenario, path)
 
@@ -904,7 +931,7 @@ def test_import_file_scenario_routes_to_the_chosen_project(sidebar, db, tmp_path
 def test_import_file_project_creates_a_new_project_without_prompting(sidebar, db, tmp_path, monkeypatch):
     project_id = db.create_project("Rivière")
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.create_profile(scenario_id, "PK 0", 0.0)
     path = tmp_path / "project.json"
     db.export_project_to_file(project_id, path)
     sidebar.refresh_tree()
@@ -930,11 +957,13 @@ def test_import_profile_into_scenario_context_menu_skips_destination_prompt(side
     sidebar.refresh_tree()
     answer_file_dialogs(monkeypatch, open_path=path)
     forbid_item_choice(monkeypatch)  # le scénario cible est déjà connu (menu contextuel)
+    # Exporté d'un brouillon, le profil n'a pas de distance : elle est demandée.
+    answer_inputs(monkeypatch, doubles=[30.0])
 
     sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
 
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
-    assert [p["name"] for p in profiles] == ["Essai"]
+    assert [(p["name"], p["distance"]) for p in profiles] == [("Essai", 30.0)]
     # Projet sans points durs : le profil importé (pente calculée par défaut) passe en
     # pente imposée, et un message le signale.
     assert db.load_profile_state(profiles[0]["id"]) == (
@@ -944,7 +973,7 @@ def test_import_profile_into_scenario_context_menu_skips_destination_prompt(side
 
 def test_import_scenario_into_project_context_menu_skips_destination_prompt(sidebar, db, tmp_path, monkeypatch):
     source_scenario = db.create_scenario(db.create_project("Source"), "Variante")
-    db.create_or_get_profile(source_scenario, "PK 0", 0.0)
+    db.create_profile(source_scenario, "PK 0", 0.0)
     path = tmp_path / "scenario.json"
     db.export_scenario_to_file(source_scenario, path)
 
@@ -961,7 +990,7 @@ def test_import_scenario_into_project_context_menu_skips_destination_prompt(side
 
 def test_import_profile_into_drafts_context_menu(sidebar, db, tmp_path, monkeypatch):
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     path = tmp_path / "profile.json"
     db.export_profile_to_file(profile_id, path)
     sidebar.refresh_tree()
@@ -1000,12 +1029,13 @@ def test_copy_draft_to_scenario_action_creates_an_independent_copy(sidebar, db, 
     scenario_id = db.create_scenario(project_id, "S")
     sidebar.refresh_tree()
     answer_item_choice(monkeypatch, "P › S")
+    answer_inputs(monkeypatch, doubles=[42.0])  # distance demandée (un brouillon n'en a pas)
     opened = record(sidebar.profile_selected)
 
     sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai berge")
 
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
-    assert [p["name"] for p in profiles] == ["Essai berge"]
+    assert [(p["name"], p["distance"]) for p in profiles] == [("Essai berge", 42.0)]
     assert opened and opened[0][0] == profiles[0]["id"]
     # Le brouillon source reste inchangé dans la zone Draft.
     assert db.get_all_drafts() == [{"id": draft_id, "name": "Essai berge"}]
@@ -1021,6 +1051,119 @@ def test_copy_draft_to_scenario_without_any_scenario_warns(sidebar, db, monkeypa
     sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai")
 
     assert warnings == ["Aucun scénario : créez d'abord un projet et un scénario."]
+
+
+def test_copy_draft_at_a_taken_distance_can_replace_the_profile(sidebar, db, monkeypatch):
+    draft_id = db.create_draft("Essai")
+    db.save_draft_state(draft_id, [{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    taken_id = db.create_profile(scenario_id, "PK 20", 20.0)
+    sidebar.refresh_tree()
+    answer_item_choice(monkeypatch, "P › S")
+    answer_inputs(monkeypatch, doubles=[20.0])
+    shown = answer_distance_taken(monkeypatch, "Remplacer le profil existant")
+    opened = record(sidebar.profile_selected)
+
+    sidebar.copy_draft_to_scenario({"type": DRAFT, "id": draft_id}, "Essai")
+
+    assert shown == ["La distance 20 m est déjà prise par le profil « PK 20 » dans ce scénario."]
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == [
+        {"id": taken_id, "name": "Essai", "distance": 20.0}
+    ]
+    assert db.load_profile_state(taken_id)[0] == [{"X (m)": 0.0, "Z (m NGF)": 5.0}]
+    assert opened == [(taken_id,)]
+
+
+# --- Distance déjà prise à l'import ou à la copie d'un profil ---
+
+def answer_distance_taken(monkeypatch, *labels):
+    """Remplace le dialogue « Distance déjà prise » : clique, à chaque affichage, le bouton
+    du libellé suivant. Retourne la liste des messages affichés."""
+    labels = list(labels)
+    shown = []
+
+    def fake_exec(box):
+        shown.append(box.text())
+        label = labels.pop(0)
+        next(b for b in box.buttons() if b.text() == label).click()
+        return 0
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    return shown
+
+
+def _profile_file_at(db, tmp_path, distance, points):
+    """Fichier d'export d'un profil « Importé » à `distance`, pris dans un autre projet."""
+    source = db.create_scenario(db.create_project("Source"), "S")
+    profile_id = db.create_profile(source, "Importé", distance)
+    db.save_profile_state(profile_id, points, {"anchor_z": 1.0})
+    path = tmp_path / "profile.json"
+    db.export_profile_to_file(profile_id, path)
+    return path
+
+
+def test_import_at_a_taken_distance_can_be_cancelled(sidebar, db, tmp_path, monkeypatch):
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    taken_id = db.create_profile(scenario_id, "PK 100", 100.0)
+    path = _profile_file_at(db, tmp_path, 100.0, [{"X (m)": 0.0, "Z (m NGF)": 3.0}])
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    shown = answer_distance_taken(monkeypatch, "Annuler")
+    opened = record(sidebar.profile_selected)
+
+    sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    assert shown == ["La distance 100 m est déjà prise par le profil « PK 100 » dans ce scénario."]
+    profiles = next(p for p in db.get_all_projects() if p["name"] == "P")["scenarios"][0]["profiles"]
+    assert profiles == [{"id": taken_id, "name": "PK 100", "distance": 100.0}]
+    assert opened == []
+
+
+def test_import_at_a_taken_distance_asks_another_one_until_it_is_free(sidebar, db, tmp_path, monkeypatch):
+    """« Choisir une autre distance » : saisie pré-remplie avec la distance prise ; si la
+    nouvelle l'est aussi, le même choix est reproposé."""
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    db.create_profile(scenario_id, "PK 100", 100.0)
+    db.create_profile(scenario_id, "PK 150", 150.0)
+    path = _profile_file_at(db, tmp_path, 100.0, [{"X (m)": 0.0, "Z (m NGF)": 3.0}])
+    sidebar.refresh_tree()
+    answer_file_dialogs(monkeypatch, open_path=path)
+    shown = answer_distance_taken(monkeypatch, "Choisir une autre distance", "Choisir une autre distance")
+    prefilled, answers = [], [150.0, 120.0]
+
+    def fake_get_double(parent, title, label, value, *a):
+        prefilled.append(value)
+        return answers.pop(0), True
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(fake_get_double))
+
+    sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    assert [m.split(" est")[0] for m in shown] == ["La distance 100 m", "La distance 150 m"]
+    assert prefilled == [100.0, 150.0]
+    profiles = next(p for p in db.get_all_projects() if p["name"] == "P")["scenarios"][0]["profiles"]
+    assert [(p["name"], p["distance"]) for p in profiles] == [
+        ("PK 100", 100.0), ("Importé", 120.0), ("PK 150", 150.0)
+    ]
+
+
+def test_replacing_the_open_profile_shows_the_imported_data(main_window, tmp_path, monkeypatch):
+    db = main_window.db_manager
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    open_id = db.create_profile(scenario_id, "PK 100", 100.0)
+    db.save_profile_state(open_id, [{"X (m)": 0.0, "Z (m NGF)": 9.0}, {"X (m)": 5.0, "Z (m NGF)": 8.0}], {})
+    imported_points = [{"X (m)": 0.0, "Z (m NGF)": 3.0}, {"X (m)": 2.0, "Z (m NGF)": 1.0}]
+    path = _profile_file_at(db, tmp_path, 100.0, imported_points)
+    main_window.sidebar.refresh_tree()
+    click(main_window.sidebar, (PROFILE, open_id))
+    answer_file_dialogs(monkeypatch, open_path=path)
+    answer_distance_taken(monkeypatch, "Remplacer le profil existant")
+
+    main_window.sidebar.import_profile_into_scenario_item({"type": SCENARIO, "id": scenario_id})
+
+    assert main_window._current_target == ("profile", open_id)
+    assert main_window.form_existing.get_data() == imported_points
+    assert main_window.form_project.get_data()["anchor_z"] == 1.0
+    assert db.load_profile_state(open_id)[0] == imported_points
+    assert "Importé" in main_window.lbl_context.text()
 
 
 # --- Archives ---
@@ -1042,7 +1185,7 @@ def test_archive_action_removes_the_project_from_the_tree_and_counts_it(sidebar,
 def test_archiving_the_open_project_clears_the_selection(sidebar, db):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     sidebar.refresh_tree()
     click(sidebar, (PROFILE, profile_id))
     cleared = record(sidebar.selection_cleared)
@@ -1093,7 +1236,7 @@ def test_archives_dialog_lists_contents_and_disables_actions_when_empty(qapp, db
 
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.create_profile(scenario_id, "PK 0", 0.0)
     db.set_project_archived(project_id, True)
     dialog = ArchivesDialog(db)
 
@@ -1145,7 +1288,7 @@ def test_editing_hard_points_recomputes_slopes_and_reports_them(sidebar, db, mon
     project_id = db.create_project("P")
     db.set_hard_points(project_id, HP_POINTS)
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 1100", 100.0)
+    profile_id = db.create_profile(scenario_id, "PK 1100", 100.0)
     sidebar.refresh_tree()
     changed = record(sidebar.project_data_changed)
     _accept_hard_points_dialog(monkeypatch, lambda d: d.table.item(0, COL_Z).setText("52"))
@@ -1162,7 +1305,7 @@ def test_hard_points_that_would_leave_a_profile_outside_cannot_be_validated(side
     project_id = db.create_project("P")
     db.set_hard_points(project_id, HP_POINTS)
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "PK 1350", 350.0)
+    db.create_profile(scenario_id, "PK 1350", 350.0)
     sidebar.refresh_tree()
     seen = {}
 
@@ -1204,7 +1347,7 @@ def _open_profile(window, distance=100.0, points=HP_POINTS):
     project_id = db.create_project("P")
     db.set_hard_points(project_id, points)
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK", distance)
+    profile_id = db.create_profile(scenario_id, "PK", distance)
     window.sidebar.refresh_tree()
     click(window.sidebar, (PROFILE, profile_id))
     return project_id, profile_id

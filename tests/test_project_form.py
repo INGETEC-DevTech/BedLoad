@@ -75,3 +75,30 @@ def test_invalid_connect_point_message_names_the_floodplain_end(form, monkeypatc
         "majeur (ou le haut de berge) actuel — géométrie invalide.",
     )]
     assert form._connect_left is None
+
+
+def test_connect_point_beyond_bank_top_is_recorded(form):
+    """Ancrage à X = -1 : le haut de berge droit est à X = 5.34, donc le point choisi
+    (X = 6) est accepté comme raccord droit."""
+    form.inputs['anchor_x'].setValue(-1.0)
+    emitted = []
+    form.data_changed.connect(emitted.append)
+
+    form._pick_connect_point('right')
+
+    assert form._connect_right == (6.0, 47.25)
+    assert not form.lbl_connect_confirm_right.isHidden()
+    assert emitted[-1]['connect_x_right'] == 6.0
+
+
+def test_edit_that_invalidates_connect_point_can_be_cancelled(form, monkeypatch):
+    """Ancrage repassé de X = -1 à X = 0 : le haut de berge droit (X = 6.34) dépasserait le
+    raccord (X = 6). Le dialogue fermé sans choix vaut "Annuler la modification"."""
+    form.inputs['anchor_x'].setValue(-1.0)
+    form._pick_connect_point('right')
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+
+    form.inputs['anchor_x'].setValue(0.0)
+
+    assert form.inputs['anchor_x'].value() == -1.0
+    assert form._connect_right == (6.0, 47.25)

@@ -41,6 +41,7 @@ BORDER_FOCUS = "#80bdff"
 # --- Sémantique ---
 DANGER = "#dc3545"
 DANGER_LIGHT = "#f8d7da"      # fond des cellules en erreur
+WARNING = "#b45309"           # avertissements non bloquants (débordement hors du profil...)
 
 # --- Espacements (px) ---
 SPACE_XS = 4

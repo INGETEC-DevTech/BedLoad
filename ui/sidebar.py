@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QTreeView, QVBoxLayout, QWidget, QPushButton,
                              QStyledItemDelegate, QDialog, QFileDialog)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFont, QColor, QPainter, QBrush, QPen
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QRectF
-from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME
+from database.db_manager import DatabaseManager, DEFAULT_SCENARIO_NAME, DistanceTakenError
 from core.hard_points import SlopeReport
 from ui.dialogs.archives_dialog import ArchivesDialog
 from ui.dialogs.hard_points_dialog import HardPointsDialog
@@ -39,6 +39,11 @@ _ARCHIVES_LABEL = "Archives"
 # (cf. _prompt_scenario_or_draft), pour la distinguer d'un id de scénario (entier).
 _DRAFT_DESTINATION = "__draft__"
 _DRAFT_DESTINATION_LABEL = "Draft (brouillons)"
+
+# Choix proposés quand la distance d'un profil importé ou copié est déjà prise dans le
+# scénario de destination (cf. Sidebar._ask_distance_taken) ; None = annuler.
+_REPLACE = "replace"
+_OTHER_DISTANCE = "other_distance"
 
 # Libellés des trois formes de fichier d'export, pour les messages d'erreur d'import
 # (cf. Sidebar._pick_import_file).
@@ -808,16 +813,26 @@ class Sidebar(QWidget):
         self.add_profile_to_scenario(scenario_id, project_id)
 
     def add_profile_to_scenario(self, scenario_id: int, project_id: int):
-        name = self._prompt_name("Nouveau Profil", "Nom du profil :")
-        if name is None:
-            return
+        # Un nom déjà pris dans le scénario est signalé tout de suite, avant la distance,
+        # et redemandé (pré-rempli) jusqu'à ce qu'il soit libre.
+        name = ""
+        while True:
+            name = self._prompt_name("Nouveau Profil", "Nom du profil :", name)
+            if name is None:
+                return
+            if not self.db.profile_name_taken(scenario_id, name):
+                break
+            QMessageBox.warning(
+                self, "Nom déjà pris",
+                f"Le profil « {name} » existe déjà dans ce scénario : choisissez un autre nom."
+            )
 
         distance = self._prompt_distance("Nouveau Profil", project_id)
         if distance is None:
             return
 
         try:
-            profile_id = self.db.create_or_get_profile(scenario_id, name, distance)
+            profile_id = self.db.create_profile(scenario_id, name, distance)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
@@ -983,18 +998,60 @@ class Sidebar(QWidget):
     def copy_draft_to_scenario(self, data: dict, name: str):
         """Copie un brouillon vers un scénario choisi par l'utilisateur, comme nouveau
         profil indépendant : même collecte/insertion qu'un import de fichier profil, mais
-        en mémoire. Le brouillon source reste inchangé dans la zone Draft."""
+        en mémoire. Le brouillon n'ayant pas de distance, elle est demandée. Le brouillon
+        source reste inchangé dans la zone Draft."""
         scenario_id = self._prompt_scenario_destination(f"Copier « {name} » vers…")
         if scenario_id is None:
             return
-        try:
-            new_profile_id = self.db.copy_draft_to_scenario(data["id"], scenario_id)
-        except ValueError as e:
-            QMessageBox.warning(self, "Erreur", str(e))
+        title = f"Copier « {name} »"
+        distance = self._prompt_distance(title, self.db.get_scenario_project_id(scenario_id))
+        if distance is None:
             return
-        self.refresh_tree()
-        self._show_slope_report(self.db.last_slope_report, only_switches=True)
-        self._select((PROFILE, new_profile_id))
+        self._run_import(lambda: self._store_at_free_distance(
+            scenario_id, distance, title,
+            lambda d, replace: self.db.copy_draft_to_scenario(data["id"], scenario_id, d, replace=replace),
+        ), PROFILE)
+
+    def _ask_distance_taken(self, error: DistanceTakenError):
+        """La distance d'un profil importé ou copié est déjà prise : remplacer le profil qui
+        l'occupe (_REPLACE), en choisir une autre (_OTHER_DISTANCE), ou annuler (None)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Distance déjà prise")
+        box.setText(str(error))
+        box.setInformativeText("Remplacer ce profil efface définitivement ses données.")
+        btn_replace = box.addButton("Remplacer le profil existant", QMessageBox.ButtonRole.DestructiveRole)
+        btn_other = box.addButton("Choisir une autre distance", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+        # Le choix destructif n'est jamais celui d'une validation réflexe (Entrée).
+        box.setDefaultButton(btn_other)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is btn_replace:
+            return _REPLACE
+        if clicked is btn_other:
+            return _OTHER_DISTANCE
+        return None
+
+    def _store_at_free_distance(self, scenario_id: int, distance: float, title: str, store) -> Optional[int]:
+        """Enregistre un profil importé ou copié via `store(distance, replace)`
+        (DatabaseManager.import_profile_into_scenario ou copy_draft_to_scenario) et
+        retourne son ID. Si sa distance est déjà prise, l'utilisateur choisit : remplacer
+        le profil qui l'occupe, en saisir une autre (même choix si elle l'est aussi), ou
+        annuler (None)."""
+        while True:
+            try:
+                return store(distance, False)
+            except DistanceTakenError as e:
+                choice = self._ask_distance_taken(e)
+            if choice == _REPLACE:
+                return store(distance, True)
+            if choice != _OTHER_DISTANCE:
+                return None
+            distance = self._prompt_distance(title, self.db.get_scenario_project_id(scenario_id), distance)
+            if distance is None:
+                return None
 
     def _pick_import_file(self, expected_type: Optional[str] = None) -> Optional[dict]:
         """Ouvre un sélecteur de fichier .json et lit/valide son contenu (cf.
@@ -1022,13 +1079,17 @@ class Sidebar(QWidget):
         return data
 
     def _run_import(self, action, node_type: str):
-        """Exécute un import déjà résolu (fichier lu, destination choisie), rafraîchit
-        l'arbre et sélectionne l'élément nouvellement créé."""
+        """Exécute un import ou une copie (fichier lu, destination choisie), rafraîchit
+        l'arbre et sélectionne l'élément créé ou remplacé, ce qui l'affiche avec ses
+        nouvelles données même s'il était déjà ouvert. `action` peut retourner None si
+        l'utilisateur annule en cours de route (cf. _store_at_free_distance)."""
         self.db.last_slope_report = SlopeReport()
         try:
             new_id = action()
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
+            return
+        if new_id is None:
             return
         self.refresh_tree()
         # Profils importés en pente calculée mais sans calcul possible dans leur projet.
@@ -1059,7 +1120,22 @@ class Sidebar(QWidget):
             if destination == _DRAFT_DESTINATION:
                 self._run_import(lambda: self.db.import_profile_into_drafts(data), DRAFT)
             else:
-                self._run_import(lambda: self.db.import_profile_into_scenario(destination, data), PROFILE)
+                self._import_profile_into_scenario(destination, data)
+
+    def _import_profile_into_scenario(self, scenario_id: int, data: dict):
+        """Importe un fichier profil dans un scénario, à la distance du fichier (cf.
+        _store_at_free_distance si elle est prise). Un profil exporté d'un brouillon n'en a
+        pas : elle est demandée, comme pour la copie d'un brouillon."""
+        title = f"Importer « {data['name']} »"
+        distance = data.get("distance")
+        if distance is None:
+            distance = self._prompt_distance(title, self.db.get_scenario_project_id(scenario_id))
+            if distance is None:
+                return
+        self._run_import(lambda: self._store_at_free_distance(
+            scenario_id, distance, title,
+            lambda d, replace: self.db.import_profile_into_scenario(scenario_id, data, d, replace=replace),
+        ), PROFILE)
 
     def import_profile_into_scenario_item(self, data: dict):
         """Menu contextuel d'un scénario : importe directement un fichier profil dedans,
@@ -1067,7 +1143,7 @@ class Sidebar(QWidget):
         imported = self._pick_import_file(expected_type="profile")
         if imported is None:
             return
-        self._run_import(lambda: self.db.import_profile_into_scenario(data["id"], imported), PROFILE)
+        self._import_profile_into_scenario(data["id"], imported)
 
     def import_scenario_into_project_item(self, data: dict):
         """Menu contextuel d'un projet : importe directement un fichier scénario dedans."""

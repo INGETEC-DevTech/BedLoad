@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGr
                                 QLabel, QDialog, QMessageBox, QFrame, QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt
 
+from core.geometry import CONNECT_POINT_ERRORS, invalid_connect_side
+from core.models import ProjectParameters
 from ui import theme
 from ui.dialogs.point_picker_dialog import PointPickerDialog
 
@@ -357,58 +359,21 @@ class ProjectProfileForm(QWidget):
             self._anchored_values is not None and current == self._anchored_values
         )
 
-    def _bank_top_x(self, side: str) -> float:
-        """Reproduit le calcul du bout du lit majeur (ou, à défaut, de hdbg.x / hdbd.x) de
-        core.geometry.build_project_cross_section, pour valider un point de raccord AVANT
-        de l'enregistrer (même règle des deux côtés)."""
-        anchor_x = self.inputs['anchor_x'].value()
-        bed_side_slope = self.inputs['bed_side_slope'].value()
-        bed_depth = self.inputs['bed_depth'].value()
-
-        if side == 'left':
-            banq_x = anchor_x - bed_side_slope * bed_depth
-            pdb_x = banq_x - self.inputs['berm_width_left'].value()
-            hdb_x = pdb_x - self.inputs['bank_width_left'].value()
-            floodplain_width = self.inputs['floodplain_width_left'].value()
-            return hdb_x - floodplain_width if floodplain_width > 0 else hdb_x
-
-        fdld_x = anchor_x + self.inputs['bed_width'].value()
-        banq_x = fdld_x + bed_side_slope * bed_depth
-        pdb_x = banq_x + self.inputs['berm_width_right'].value()
-        hdb_x = pdb_x + self.inputs['bank_width_right'].value()
-        floodplain_width = self.inputs['floodplain_width_right'].value()
-        return hdb_x + floodplain_width if floodplain_width > 0 else hdb_x
-
     def _pick_connect_point(self, side: str):
         title = "Choisir le point de raccord gauche" if side == 'left' else "Choisir le point de raccord droit"
         point = self._choose_existing_point(title)
         if point is None:
             return
 
-        x, z = point
-        bank_top_x = self._bank_top_x(side)
-
-        if side == 'left':
-            is_valid = x < bank_top_x
-            error_msg = (
-                "Le point de raccord gauche est plus proche de l'axe du lit que le "
-                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
-            )
-        else:
-            is_valid = x > bank_top_x
-            error_msg = (
-                "Le point de raccord droit est plus proche de l'axe du lit que le "
-                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
-            )
-
-        if not is_valid:
-            QMessageBox.warning(self, "Point de raccord invalide", error_msg)
+        # Validé AVANT d'être enregistré, seul (l'autre côté n'entre pas en compte).
+        if self._invalid_connect_side(**{side: point}) is not None:
+            QMessageBox.warning(self, "Point de raccord invalide", CONNECT_POINT_ERRORS[side])
             return
 
         if side == 'left':
-            self._connect_left = (x, z)
+            self._connect_left = point
         else:
-            self._connect_right = (x, z)
+            self._connect_right = point
 
         self._update_connect_ui(side)
         self.on_value_changed()
@@ -434,22 +399,19 @@ class ProjectProfileForm(QWidget):
         lbl.setVisible(connect is not None)
         btn_remove.setVisible(connect is not None)
 
-    def _invalid_connect_side(self) -> str | None:
-        """Reproduit la validation de core.geometry.build_project_cross_section pour
-        détecter, à partir des valeurs ACTUELLES des spinboxes, si un raccord existant
-        est devenu invalide (point plus proche de l'axe du lit que le bout du lit
-        majeur, ou à défaut le haut de berge)."""
-        if self._connect_left is not None:
-            cx, _ = self._connect_left
-            if not (cx < self._bank_top_x('left')):
-                return 'left'
-
-        if self._connect_right is not None:
-            cx, _ = self._connect_right
-            if not (cx > self._bank_top_x('right')):
-                return 'right'
-
-        return None
+    def _invalid_connect_side(self, left=None, right=None) -> str | None:
+        """Côté dont le raccord ((x, z), ou None si absent) serait invalide avec les
+        valeurs ACTUELLES des spinboxes (point plus proche de l'axe du lit que le bout du
+        lit majeur, ou à défaut le haut de berge), ou None. La règle n'est définie que
+        dans core.geometry.invalid_connect_side."""
+        cx_l, cz_l = left or (None, None)
+        cx_r, cz_r = right or (None, None)
+        params = ProjectParameters(
+            **{key: sb.value() for key, sb in self.inputs.items()},
+            connect_x_left=cx_l, connect_z_left=cz_l,
+            connect_x_right=cx_r, connect_z_right=cz_r,
+        )
+        return invalid_connect_side(params)
 
     def _restore_last_valid_values(self):
         if self._last_valid_values is None:
@@ -490,7 +452,7 @@ class ProjectProfileForm(QWidget):
         if self._is_loading:
             return
 
-        invalid_side = self._invalid_connect_side()
+        invalid_side = self._invalid_connect_side(self._connect_left, self._connect_right)
         if invalid_side is not None:
             self._handle_invalid_connect(invalid_side)
             # "Annuler la modification" a pu remettre l'ancrage sur le point choisi.

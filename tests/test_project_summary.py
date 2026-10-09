@@ -133,6 +133,14 @@ def test_one_row_per_scenario_with_its_key_figures(view):
     assert "Amont" in view.table.item(0, _column(view, "Débordements")).toolTip()
 
 
+def test_warnings_use_the_theme_warning_color(view):
+    """Profils incomplets et débordements : la même couleur d'avertissement que
+    l'onglet Hydraulique, celle du thème."""
+    from ui import theme
+    for label in ("Complets", "Débordements"):
+        assert view.table.item(0, _column(view, label)).foreground().color().name() == theme.WARNING
+
+
 def test_numeric_columns_sort_by_value_and_unavailable_values_last(view):
     col = _column(view, "Profils")
     view.table.sortItems(col, Qt.SortOrder.AscendingOrder)

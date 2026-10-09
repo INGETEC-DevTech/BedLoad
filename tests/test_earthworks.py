@@ -93,10 +93,10 @@ def test_zone_outline_is_closed_and_follows_both_profiles():
 # --- Graphique de l'onglet Profil projet ---
 
 def _project_figure(existing_points, show_overlay=True):
-    from core.controller import ProfileController, ViewMode
+    from viz.figures import ViewMode, build_figure
     from core.models import ProjectParameters
     params = vars(ProjectParameters(anchor_x=4.0, anchor_z=10.0, bed_width=2.0, bed_depth=0.5))
-    return ProfileController().build_figure(existing_points, params, ViewMode.PROJECT, show_overlay=show_overlay)
+    return build_figure(existing_points, params, ViewMode.PROJECT, show_overlay=show_overlay)
 
 
 FLAT_GROUND = [{"X (m)": -5.0, "Z (m NGF)": 11.0}, {"X (m)": 20.0, "Z (m NGF)": 11.0}]

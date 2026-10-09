@@ -1,6 +1,9 @@
+import re
+from dataclasses import replace
+
 import pytest
 
-from core.geometry import build_project_cross_section
+from core.geometry import CONNECT_POINT_ERRORS, build_project_cross_section, invalid_connect_side
 from core.models import ProjectParameters
 
 
@@ -100,6 +103,28 @@ def test_connect_point_validated_against_floodplain_end_when_present():
     )
     section = build_project_cross_section(valid_params)
     assert section.points[0].x == pytest.approx(floodplain_end_x - 0.5)
+
+
+def test_invalid_connect_side_requires_connect_point_strictly_beyond_geometry_end():
+    """Chaque raccord doit être strictement au-delà du bout de son côté (lit majeur à gauche,
+    haut de berge à droite ici) ; le côté gauche est signalé en premier."""
+    params = ProjectParameters(floodplain_width_left=4.0)
+    points = build_project_cross_section(params).points
+    end_left, end_right = points[0].x, points[-1].x
+
+    def with_connects(left=None, right=None):
+        return replace(params, connect_x_left=left, connect_z_left=None if left is None else 50.0,
+                       connect_x_right=right, connect_z_right=None if right is None else 50.0)
+
+    assert invalid_connect_side(params) is None
+    assert invalid_connect_side(with_connects(left=end_left - 0.01)) is None
+    assert invalid_connect_side(with_connects(left=end_left)) == 'left'
+    assert invalid_connect_side(with_connects(right=end_right + 0.01)) is None
+    assert invalid_connect_side(with_connects(right=end_right)) == 'right'
+    assert invalid_connect_side(with_connects(left=end_left, right=end_right)) == 'left'
+
+    with pytest.raises(ValueError, match=re.escape(CONNECT_POINT_ERRORS['right'])):
+        build_project_cross_section(with_connects(right=end_right))
 
 
 def test_zero_bank_slope_raises_zero_division_error():

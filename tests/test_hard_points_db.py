@@ -76,7 +76,7 @@ def test_no_point_upstream_of_the_first_one(tmp_path):
 def test_moving_hard_points_cannot_leave_existing_profiles_outside(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    db.create_or_get_profile(scenario_id, "PK 1350", 350.0)
+    db.create_profile(scenario_id, "PK 1350", 350.0)
     shrunk = db.get_hard_points(project_id)[:2]  # sans C : zone ramenée à 0-200 m
 
     with pytest.raises(ValueError, match="« S › PK 1350 » \\(PK 1350\\)"):
@@ -89,8 +89,8 @@ def test_moving_the_first_point_keeps_the_real_position_of_profiles(tmp_path):
     terrain, leur distance (relative au premier point) augmente donc de 50 m."""
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    db.create_or_get_profile(scenario_id, "PK 1100", 100.0)
-    db.create_or_get_profile(scenario_id, "PK 1300", 300.0)
+    db.create_profile(scenario_id, "PK 1100", 100.0)
+    db.create_profile(scenario_id, "PK 1300", 300.0)
     moved = db.get_hard_points(project_id)
     moved[0]["pk"] = 950.0
 
@@ -106,8 +106,8 @@ def test_profile_distance_must_be_inside_the_zone(tmp_path):
     _, scenario_id = project_with_points(db)
 
     with pytest.raises(ValueError, match="hors de la zone.*0 à 400 m"):
-        db.create_or_get_profile(scenario_id, "Trop loin", 450.0)
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+        db.create_profile(scenario_id, "Trop loin", 450.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     with pytest.raises(ValueError, match="hors de la zone"):
         db.rename_profile(profile_id, "PK 0", -1.0)
     with pytest.raises(ValueError, match="hors de la zone"):
@@ -119,7 +119,7 @@ def test_without_two_complete_points_distances_are_free_and_slopes_imposed(tmp_p
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db, points=[{"name": "Seul", "pk": 0.0, "z": 50.0}])
 
-    profile_id = db.create_or_get_profile(scenario_id, "Loin", 5000.0)
+    profile_id = db.create_profile(scenario_id, "Loin", 5000.0)
 
     assert db.get_distance_zone(project_id) is None
     # Né en pente imposée, sans message (il n'a jamais été en pente calculée)...
@@ -136,7 +136,7 @@ def test_new_profile_gets_the_slope_of_its_segment(tmp_path, distance, slope):
     db = make_db(tmp_path)
     _, scenario_id = project_with_points(db)
 
-    profile_id = db.create_or_get_profile(scenario_id, "P", distance)
+    profile_id = db.create_profile(scenario_id, "P", distance)
 
     assert params(db, profile_id)["slope_mode"] == "computed"
     assert params(db, profile_id)["slope"] == pytest.approx(slope)
@@ -145,7 +145,7 @@ def test_new_profile_gets_the_slope_of_its_segment(tmp_path, distance, slope):
 def test_profile_slope_info_names_the_segment(tmp_path):
     db = make_db(tmp_path)
     _, scenario_id = project_with_points(db)
-    profile_id = db.create_or_get_profile(scenario_id, "P", 250.0)
+    profile_id = db.create_profile(scenario_id, "P", 250.0)
 
     info = db.profile_slope_info(profile_id)
 
@@ -155,7 +155,7 @@ def test_profile_slope_info_names_the_segment(tmp_path):
 def test_changing_the_distance_recomputes_the_slope(tmp_path):
     db = make_db(tmp_path)
     _, scenario_id = project_with_points(db)
-    profile_id = db.create_or_get_profile(scenario_id, "P", 100.0)
+    profile_id = db.create_profile(scenario_id, "P", 100.0)
 
     report = db.rename_profile(profile_id, "P", 300.0)
 
@@ -166,8 +166,8 @@ def test_changing_the_distance_recomputes_the_slope(tmp_path):
 def test_changing_hard_points_updates_computed_slopes_but_not_imposed_ones(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    computed = db.create_or_get_profile(scenario_id, "Calculée", 100.0)
-    imposed = db.create_or_get_profile(scenario_id, "Imposée", 300.0)
+    computed = db.create_profile(scenario_id, "Calculée", 100.0)
+    imposed = db.create_profile(scenario_id, "Imposée", 300.0)
     db.save_profile_state(imposed, [], {"slope_mode": "imposed", "slope": 0.0123})
     changed = db.get_hard_points(project_id)
     changed[0]["z"] = 52.0  # tronçon A-B : 6 m sur 200 m
@@ -184,7 +184,7 @@ def test_changing_hard_points_updates_computed_slopes_but_not_imposed_ones(tmp_p
 def test_removing_hard_points_switches_computed_profiles_to_imposed(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    profile_id = db.create_or_get_profile(scenario_id, "P", 0.0)
+    profile_id = db.create_profile(scenario_id, "P", 0.0)
 
     report = db.set_hard_points(project_id, [])
 
@@ -258,8 +258,8 @@ def test_migration_keeps_an_incomplete_point_as_is(tmp_path):
 def test_project_export_import_keeps_hard_points_and_slope_modes(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    computed = db.create_or_get_profile(scenario_id, "Calculée", 100.0)
-    imposed = db.create_or_get_profile(scenario_id, "Imposée", 300.0)
+    computed = db.create_profile(scenario_id, "Calculée", 100.0)
+    imposed = db.create_profile(scenario_id, "Imposée", 300.0)
     db.save_profile_state(imposed, [], {"slope_mode": "imposed", "slope": 0.0123})
     path = tmp_path / "projet.json"
     db.export_project_to_file(project_id, path)
@@ -294,7 +294,7 @@ def test_legacy_project_file_with_upstream_and_downstream_still_imports(tmp_path
 def test_imported_computed_profile_takes_the_slope_of_its_new_project(tmp_path):
     db = make_db(tmp_path)
     _, source_scenario = project_with_points(db, name="Source")
-    profile_id = db.create_or_get_profile(source_scenario, "PK 100", 100.0)
+    profile_id = db.create_profile(source_scenario, "PK 100", 100.0)
     other_points = [{"name": "X", "pk": 0.0, "z": 10.0}, {"name": "Y", "pk": 1000.0, "z": 9.0}]
     _, target_scenario = project_with_points(db, points=other_points, name="Cible")
 
@@ -306,8 +306,8 @@ def test_imported_computed_profile_takes_the_slope_of_its_new_project(tmp_path):
 def test_importing_a_scenario_with_profiles_outside_the_zone_is_refused_entirely(tmp_path):
     db = make_db(tmp_path)
     _, source_scenario = project_with_points(db, name="Source")
-    db.create_or_get_profile(source_scenario, "PK 50", 50.0)
-    db.create_or_get_profile(source_scenario, "PK 350", 350.0)
+    db.create_profile(source_scenario, "PK 50", 50.0)
+    db.create_profile(source_scenario, "PK 350", 350.0)
     short = [{"name": "X", "pk": 0.0, "z": 10.0}, {"name": "Y", "pk": 100.0, "z": 9.0}]
     target_project, _ = project_with_points(db, points=short, name="Cible")
 
@@ -319,7 +319,7 @@ def test_importing_a_scenario_with_profiles_outside_the_zone_is_refused_entirely
 def test_duplicate_project_copies_hard_points_and_slope_modes(tmp_path):
     db = make_db(tmp_path)
     project_id, scenario_id = project_with_points(db)
-    imposed = db.create_or_get_profile(scenario_id, "Imposée", 300.0)
+    imposed = db.create_profile(scenario_id, "Imposée", 300.0)
     db.save_profile_state(imposed, [], {"slope_mode": "imposed", "slope": 0.0123})
 
     new_id = db.duplicate_project(project_id, "Copie")
@@ -335,7 +335,7 @@ def test_draft_copied_to_a_scenario_switches_to_computed_slope(tmp_path):
     draft_id = db.create_draft("Essai")
     db.save_draft_state(draft_id, [], {"slope": 0.5, "slope_mode": "imposed"})
 
-    new_id = db.copy_draft_to_scenario(draft_id, scenario_id)
+    new_id = db.copy_draft_to_scenario(draft_id, scenario_id, 0.0)
 
     assert params(db, new_id) == {"slope": pytest.approx(0.02), "slope_mode": "computed"}
     assert db.load_draft_state(draft_id)[1] == {"slope": 0.5, "slope_mode": "imposed"}

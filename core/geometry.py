@@ -16,33 +16,27 @@ feuille CT1 du classeur hydrotopo_v_1_5_1.xlsx.
 """
 
 import math
+from typing import Optional
 
 from core.models import CrossSection, Point, ProjectParameters, Subsection
 
+# Messages d'erreur d'un raccord invalide (cf. invalid_connect_side), par côté.
+CONNECT_POINT_ERRORS = {
+    'left': (
+        "Le point de raccord gauche est plus proche de l'axe du lit que le "
+        "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
+    ),
+    'right': (
+        "Le point de raccord droit est plus proche de l'axe du lit que le "
+        "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
+    ),
+}
 
-def build_project_cross_section(params: ProjectParameters, name: str = "Profil projet") -> CrossSection:
-    """
-    Construit le profil projet de gauche à droite, à partir du bord gauche du
-    fond du lit (point d'ancrage).
 
-    Ordre des points générés (8 points, de gauche à droite) :
-        haut de berge gauche (hdbg)
-        pied de berge gauche (pdbg)
-        banquette gauche (banq1)
-        bord gauche du fond du lit (fdlg)   <- point d'ancrage
-        bord droit du fond du lit (fdld)
-        banquette droite (banq2)
-        pied de berge droit (pdbd)
-        haut de berge droit (hdbd)
-
-    Un lit majeur optionnel peut s'ajouter de chaque côté, juste après la berge
-    (donc avant hdbg / après hdbd) : bout du lit majeur gauche (lmg) et bout du
-    lit majeur droit (lmd). Il n'apparaît que si sa largeur (floodplain_width_*)
-    est strictement positive ; à 0 (valeur par défaut), le comportement est
-    inchangé.
-    """
-    p = params
-
+def _profile_points(p: ProjectParameters):
+    """Points du profil projet avant un éventuel raccord, de gauche à droite :
+    (lmg, hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd, lmd). lmg / lmd valent
+    None quand le lit majeur de ce côté est désactivé."""
     # Fond du lit (plat, largeur = bed_width), calé sur le point d'ancrage.
     fdlg = Point(x=p.anchor_x, z=p.anchor_z)
     fdld = Point(x=fdlg.x + p.bed_width, z=fdlg.z)
@@ -73,30 +67,67 @@ def build_project_cross_section(params: ProjectParameters, name: str = "Profil p
     if p.floodplain_width_right > 0:
         lmd = Point(x=hdbd.x + p.floodplain_width_right, z=hdbd.z + p.floodplain_width_right * p.floodplain_slope_right)
 
+    return lmg, hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd, lmd
+
+
+def invalid_connect_side(params: ProjectParameters) -> Optional[str]:
+    """Côté ('left' ou 'right') dont le point de raccord est plus proche de l'axe du lit
+    que le bout de la géométrie, ou None si les raccords configurés sont valides (le
+    côté gauche est vérifié en premier). Seule définition de cette règle :
+    build_project_cross_section s'en sert pour refuser une géométrie invalide, le
+    formulaire du profil projet pour valider un raccord avant de l'enregistrer."""
+    lmg, hdbg, *_, hdbd, lmd = _profile_points(params)
+
     # Bout de la géométrie côté gauche/droit avant un éventuel raccord : le lit majeur
     # quand il est activé, sinon le haut de berge (comportement historique).
     end_left = lmg if lmg is not None else hdbg
     end_right = lmd if lmd is not None else hdbd
+
+    if params.connect_x_left is not None and not (params.connect_x_left < end_left.x):
+        return 'left'
+    if params.connect_x_right is not None and not (params.connect_x_right > end_right.x):
+        return 'right'
+    return None
+
+
+def build_project_cross_section(params: ProjectParameters, name: str = "Profil projet") -> CrossSection:
+    """
+    Construit le profil projet de gauche à droite, à partir du bord gauche du
+    fond du lit (point d'ancrage).
+
+    Ordre des points générés (8 points, de gauche à droite) :
+        haut de berge gauche (hdbg)
+        pied de berge gauche (pdbg)
+        banquette gauche (banq1)
+        bord gauche du fond du lit (fdlg)   <- point d'ancrage
+        bord droit du fond du lit (fdld)
+        banquette droite (banq2)
+        pied de berge droit (pdbd)
+        haut de berge droit (hdbd)
+
+    Un lit majeur optionnel peut s'ajouter de chaque côté, juste après la berge
+    (donc avant hdbg / après hdbd) : bout du lit majeur gauche (lmg) et bout du
+    lit majeur droit (lmd). Il n'apparaît que si sa largeur (floodplain_width_*)
+    est strictement positive ; à 0 (valeur par défaut), le comportement est
+    inchangé.
+    """
+    p = params
+
+    invalid_side = invalid_connect_side(p)
+    if invalid_side is not None:
+        raise ValueError(CONNECT_POINT_ERRORS[invalid_side])
+
+    lmg, hdbg, pdbg, banq1, fdlg, fdld, banq2, pdbd, hdbd, lmd = _profile_points(p)
 
     # Raccord optionnel vers un point du profil existant, choisi manuellement (valeur
     # figée à la sélection) : prolonge la géométrie au-delà du bout du lit majeur (ou,
     # à défaut, du haut de berge).
     raccord_g = None
     if p.connect_x_left is not None:
-        if not (p.connect_x_left < end_left.x):
-            raise ValueError(
-                "Le point de raccord gauche est plus proche de l'axe du lit que le "
-                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
-            )
         raccord_g = Point(x=p.connect_x_left, z=p.connect_z_left)
 
     raccord_d = None
     if p.connect_x_right is not None:
-        if not (p.connect_x_right > end_right.x):
-            raise ValueError(
-                "Le point de raccord droit est plus proche de l'axe du lit que le "
-                "bout du lit majeur (ou le haut de berge) actuel — géométrie invalide."
-            )
         raccord_d = Point(x=p.connect_x_right, z=p.connect_z_right)
 
     # Noms des points, repris tels quels dans l'export Excel du profil projet.

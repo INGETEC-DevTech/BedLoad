@@ -13,8 +13,6 @@ from core.hard_points import format_slope
 from core.project_summary import ProjectSummary, ScenarioSummary
 from ui import theme
 
-# Orange des avertissements de débordement (cf. core.controller.OVERFLOW_WARNING_COLOR).
-_WARNING_COLOR = "#b45309"
 _NOT_AVAILABLE = "—"
 
 COLUMNS = [
@@ -210,7 +208,7 @@ class ProjectSummaryView(QWidget):
         complete = _SortableItem(f"{s.n_complete}/{s.n_profiles}", s.n_complete)
         complete.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         if s.n_complete < s.n_profiles:
-            complete.setForeground(QColor(_WARNING_COLOR))
+            complete.setForeground(QColor(theme.WARNING))
         self.table.setItem(row, 2, complete)
 
         if s.distance_range is None:
@@ -247,7 +245,7 @@ class ProjectSummaryView(QWidget):
             item = _SortableItem(f"{count} ⚠" if count else "0", count)
             lines = []
             if count:
-                item.setForeground(QColor(_WARNING_COLOR))
+                item.setForeground(QColor(theme.WARNING))
                 lines.append("Débordement : " + ", ".join(s.overflow_names))
             if s.n_hydraulics < s.n_profiles:
                 lines.append(f"{s.n_hydraulics} profil{'s' if s.n_hydraulics > 1 else ''} "

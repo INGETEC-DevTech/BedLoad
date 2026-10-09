@@ -1,6 +1,7 @@
 import pytest
 
 from core.controller import ProfileController
+from viz.figures import build_longitudinal_figure
 from core.earthworks import compute_earthworks
 from core.geometry import build_project_cross_section
 from core.longitudinal import build_longitudinal_profile, LongitudinalProfile
@@ -94,7 +95,7 @@ def test_station_earthworks_match_the_cross_section_computation():
 
     existing = _Section("Existant", [_Point(x=p["X (m)"], z=p["Z (m NGF)"]) for p in EXISTING])
     for station, anchor_z in zip(stations[:2], (48.5, 47.0)):
-        params = controller._to_project_parameters({**controller.default_project_params(), "anchor_z": anchor_z})
+        params = controller.to_project_parameters({**controller.default_project_params(), "anchor_z": anchor_z})
         expected = compute_earthworks(existing, build_project_cross_section(params, name="Projet"))
         assert station.computed
         assert station.cut == pytest.approx(expected.cut_total)
@@ -118,7 +119,7 @@ def test_longitudinal_shows_each_profile_earthworks_on_hover_and_the_scenario_su
     stations = controller.station_earthworks(_states())
     rows = [(0.0, 48.0, 48.5, "Amont"), (50.0, 48.0, 47.0, "Milieu"), (100.0, 48.0, None, "Aval")]
 
-    fig = controller.build_longitudinal_figure(rows, None, stations)
+    fig = build_longitudinal_figure(rows, None, stations)
 
     hover, cut_entry, fill_entry, balance_entry = _earthworks_traces(fig)
     # Info-bulles : marqueurs invisibles, hors légende.

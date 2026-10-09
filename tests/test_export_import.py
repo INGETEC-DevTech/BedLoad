@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from database.db_manager import DatabaseManager
+from database.db_manager import DatabaseManager, DistanceTakenError
 
 
 def make_db(tmp_path) -> DatabaseManager:
@@ -25,7 +25,7 @@ TWO_POINTS = [{"name": "Pont Amont", "pk": 0.0, "z": 100.0}, {"name": "Pont Aval
 
 
 def populate_profile(db, scenario_id, name="PK 0", distance=0.0):
-    profile_id = db.create_or_get_profile(scenario_id, name, distance)
+    profile_id = db.create_profile(scenario_id, name, distance)
     existing_data = [{"X (m)": 0.0, "Z (m NGF)": 100.0}, {"X (m)": 10.0, "Z (m NGF)": 98.5}]
     # Pente imposée : sa valeur doit traverser intacte export, import et duplication.
     project_params = {"anchor_z": 98.0, "slope": 0.004, "slope_mode": "imposed", "ks_pro": 30.0,
@@ -102,24 +102,77 @@ def test_import_profile_into_scenario_round_trip_without_collision(tmp_path):
     assert db.load_profile_state(new_id) == (existing_data, project_params)
 
 
-def test_import_profile_into_same_scenario_renames_and_shifts_distance(tmp_path):
-    """Réimporter un profil dans le scénario dont il vient (collision garantie sur le nom
-    ET la distance) : renommage et léger décalage automatiques, sans écraser l'original."""
+def test_import_profile_at_a_taken_distance_is_refused_without_writing(tmp_path):
+    """Distance déjà prise (au millimètre près) : DistanceTakenError, qui nomme le profil
+    qui l'occupe, et rien n'est écrit."""
     db = make_db(tmp_path)
-    project_id = db.create_project("P")
-    scenario_id = db.create_scenario(project_id, "S")
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
     profile_id, existing_data, project_params = populate_profile(db, scenario_id, "PK 0", 0.0)
-    exported = db.export_profile(profile_id)
+    exported = {**db.export_profile(profile_id), "name": "Autre", "distance": 0.0004}
 
-    new_id = db.import_profile_into_scenario(scenario_id, exported)
-    again_id = db.import_profile_into_scenario(scenario_id, exported)
+    with pytest.raises(DistanceTakenError, match="« PK 0 »") as error:
+        db.import_profile_into_scenario(scenario_id, exported)
+
+    assert (error.value.distance, error.value.profile_name) == (0.0, "PK 0")
+    profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
+    assert profiles == [{"id": profile_id, "name": "PK 0", "distance": 0.0}]
+
+
+def test_import_profile_at_another_distance_renames_on_name_collision(tmp_path):
+    db = make_db(tmp_path)
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    profile_id, existing_data, project_params = populate_profile(db, scenario_id, "PK 0", 0.0)
+
+    new_id = db.import_profile_into_scenario(scenario_id, db.export_profile(profile_id), distance=12.5)
 
     profiles = {p["id"]: p for p in db.get_all_projects()[0]["scenarios"][0]["profiles"]}
-    assert profiles[profile_id]["name"] == "PK 0" and profiles[profile_id]["distance"] == 0.0
-    assert profiles[new_id]["name"] == "PK 0 - importé" and profiles[new_id]["distance"] == 0.001
-    assert profiles[again_id]["name"] == "PK 0 - importé (2)" and profiles[again_id]["distance"] == 0.002
-    for pid in (profile_id, new_id, again_id):
-        assert db.load_profile_state(pid) == (existing_data, project_params)
+    assert profiles[profile_id] == {"id": profile_id, "name": "PK 0", "distance": 0.0}
+    assert profiles[new_id] == {"id": new_id, "name": "PK 0 - importé", "distance": 12.5}
+    assert db.load_profile_state(new_id) == (existing_data, project_params)
+
+
+def test_import_profile_replacing_the_one_at_its_distance(tmp_path):
+    """Remplacement : le profil qui occupe la distance garde son id et sa distance, et prend
+    le nom et les données du profil importé ; son nom ne compte pas comme une collision,
+    contrairement à celui des autres profils."""
+    db = make_db(tmp_path)
+    project_id = db.create_project("P")
+    source = db.create_scenario(project_id, "Source")
+    target = db.create_scenario(project_id, "Cible")
+    imported_id, existing_data, project_params = populate_profile(db, source, "PK 100", 100.0)
+    replaced_id = db.create_profile(target, "Ancien", 100.0)
+    other_id = db.create_profile(target, "PK 100", 200.0)
+    exported = db.export_profile(imported_id)
+
+    assert db.import_profile_into_scenario(target, exported, replace=True) == replaced_id
+    profiles = {p["id"]: p for p in db.get_all_projects()[0]["scenarios"][1]["profiles"]}
+    assert profiles == {
+        replaced_id: {"id": replaced_id, "name": "PK 100 - importé", "distance": 100.0},
+        other_id: {"id": other_id, "name": "PK 100", "distance": 200.0},
+    }
+    assert db.load_profile_state(replaced_id) == (existing_data, project_params)
+
+    # Sans autre profil du même nom, le profil remplacé prend exactement le nom importé.
+    db.delete_profile(other_id)
+    db.import_profile_into_scenario(target, exported, replace=True)
+    assert db.get_all_projects()[0]["scenarios"][1]["profiles"] == [
+        {"id": replaced_id, "name": "PK 100", "distance": 100.0}
+    ]
+
+
+def test_import_of_a_profile_without_distance_requires_one(tmp_path):
+    """Un profil exporté d'un brouillon n'a pas de distance : elle doit être fournie."""
+    db = make_db(tmp_path)
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    exported = db.export_draft(db.create_draft("Essai"))
+
+    with pytest.raises(ValueError, match="pas de distance"):
+        db.import_profile_into_scenario(scenario_id, exported)
+
+    new_id = db.import_profile_into_scenario(scenario_id, exported, distance=40.0)
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == [
+        {"id": new_id, "name": "Essai", "distance": 40.0}
+    ]
 
 
 def test_import_profile_into_unknown_scenario_raises(tmp_path):
@@ -345,15 +398,14 @@ def test_copy_draft_to_scenario_leaves_the_draft_untouched(tmp_path):
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
 
-    new_profile_id = db.copy_draft_to_scenario(draft_id, scenario_id)
+    new_profile_id = db.copy_draft_to_scenario(draft_id, scenario_id, 75.0)
 
     # Le brouillon source est intact...
     assert db.get_all_drafts() == [{"id": draft_id, "name": "Essai berge"}]
     assert db.load_draft_state(draft_id) == (existing_data, project_params)
-    # ...et la copie, dans le scénario, porte les mêmes données.
+    # ...et la copie, dans le scénario, porte les mêmes données, à la distance demandée.
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
-    assert [p["name"] for p in profiles] == ["Essai berge"]
-    assert profiles[0]["id"] == new_profile_id
+    assert profiles == [{"id": new_profile_id, "name": "Essai berge", "distance": 75.0}]
     assert strip_mode(db.load_profile_state(new_profile_id)) == (existing_data, project_params)
 
     # Et modifier la copie ensuite ne touche pas le brouillon.
@@ -366,13 +418,30 @@ def test_copy_draft_to_scenario_renames_on_collision(tmp_path):
     draft_id = db.create_draft("Essai")
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "Essai", 0.0)  # collision garantie sur le nom
+    db.create_profile(scenario_id, "Essai", 0.0)  # collision garantie sur le nom
 
-    new_id = db.copy_draft_to_scenario(draft_id, scenario_id)
+    new_id = db.copy_draft_to_scenario(draft_id, scenario_id, 10.0)
 
     profiles = {p["id"]: p for p in db.get_all_projects()[0]["scenarios"][0]["profiles"]}
     assert profiles[new_id]["name"] == "Essai - importé"
     assert db.get_all_drafts() == [{"id": draft_id, "name": "Essai"}]  # toujours "Essai"
+
+
+def test_copy_draft_at_a_taken_distance_raises_or_replaces(tmp_path):
+    db = make_db(tmp_path)
+    draft_id = db.create_draft("Essai")
+    db.save_draft_state(draft_id, [{"X (m)": 1.0, "Z (m NGF)": 2.0}], {"anchor_z": 1.5})
+    scenario_id = db.create_scenario(db.create_project("P"), "S")
+    taken_id = db.create_profile(scenario_id, "PK 10", 10.0)
+
+    with pytest.raises(DistanceTakenError, match="« PK 10 »"):
+        db.copy_draft_to_scenario(draft_id, scenario_id, 10.0)
+
+    assert db.copy_draft_to_scenario(draft_id, scenario_id, 10.0, replace=True) == taken_id
+    assert db.get_all_projects()[0]["scenarios"][0]["profiles"] == [
+        {"id": taken_id, "name": "Essai", "distance": 10.0}
+    ]
+    assert strip_mode(db.load_profile_state(taken_id)) == ([{"X (m)": 1.0, "Z (m NGF)": 2.0}], {"anchor_z": 1.5})
 
 
 def test_copy_draft_to_unknown_scenario_raises(tmp_path):
@@ -380,7 +449,7 @@ def test_copy_draft_to_unknown_scenario_raises(tmp_path):
     draft_id = db.create_draft("Essai")
 
     with pytest.raises(ValueError, match="introuvable"):
-        db.copy_draft_to_scenario(draft_id, 999)
+        db.copy_draft_to_scenario(draft_id, 999, 0.0)
 
 
 # --- Fichiers invalides ---
@@ -418,13 +487,13 @@ def test_read_export_file_rejects_missing_file(tmp_path):
 def test_export_import_keeps_both_background_profile_boxes(tmp_path):
     db = DatabaseManager(db_path=tmp_path / "test.db")
     scenario_id = db.create_scenario(db.create_project("P"), "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     params = {"show_overlay_project": True, "show_overlay_hydraulics": False}
     db.save_profile_state(profile_id, [], params)
     path = tmp_path / "profil.json"
     db.export_profile_to_file(profile_id, path)
 
-    new_id = db.import_profile_into_scenario(scenario_id, db.read_export_file(path))
+    new_id = db.import_profile_into_scenario(scenario_id, db.read_export_file(path), distance=5.0)
 
     restored = db.load_profile_state(new_id)[1]
     assert (restored["show_overlay_project"], restored["show_overlay_hydraulics"]) == (True, False)
@@ -442,7 +511,8 @@ LEGACY_PARAMS = {
 
 
 def test_old_export_with_legacy_parameters_still_imports_and_draws(tmp_path):
-    from core.controller import ProfileController, ViewMode
+    from core.controller import ProfileController
+    from viz.figures import ViewMode, build_figure
     db = make_db(tmp_path)
     scenario_id = db.create_scenario(db.create_project("P"), "S")
     profile_id, existing_data, project_params = populate_profile(db, scenario_id)
@@ -451,11 +521,11 @@ def test_old_export_with_legacy_parameters_still_imports_and_draws(tmp_path):
     path = tmp_path / "ancien.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    imported = db.import_profile_into_scenario(scenario_id, db.read_export_file(path))
+    imported = db.import_profile_into_scenario(scenario_id, db.read_export_file(path), distance=5.0)
     existing, params = db.load_profile_state(imported)
 
     controller = ProfileController()
     merged = {**controller.default_project_params(), **params}
     for mode in ViewMode:
-        assert controller.build_figure(existing, merged, mode) is not None
+        assert build_figure(existing, merged, mode) is not None
     assert controller.station_earthworks(db.get_scenario_profile_states(scenario_id))[0].computed

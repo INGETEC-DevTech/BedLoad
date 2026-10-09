@@ -82,6 +82,19 @@ _EXPORT_VERSION = 2
 _EXPORT_TYPES = ("profile", "scenario", "project")
 
 
+class DistanceTakenError(ValueError):
+    """La distance d'un profil importé ou copié dans un scénario est déjà prise par un autre
+    profil de ce scénario (cf. import_profile_into_scenario / copy_draft_to_scenario) :
+    l'appelant peut retenter en remplaçant ce profil (replace=True), ou à une autre distance."""
+
+    def __init__(self, distance: float, profile_name: str):
+        super().__init__(
+            f"La distance {distance:g} m est déjà prise par le profil « {profile_name} » dans ce scénario."
+        )
+        self.distance = distance
+        self.profile_name = profile_name
+
+
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
@@ -824,19 +837,24 @@ class DatabaseManager:
 
     # --- GESTION DES PROFILS ET AUTO-SAVE ---
 
-    def create_or_get_profile(self, scenario_id: int, name: str, distance: float) -> int:
-        """Crée un profil s'il n'existe pas (identifié par son nom), ou retourne l'ID de
-        celui qui porte déjà ce nom dans ce scénario (la distance fournie n'est alors pas
-        appliquée : le profil existant n'est pas modifié)."""
+    @staticmethod
+    def _profile_name_taken(cursor: sqlite3.Cursor, scenario_id: int, name: str) -> bool:
+        return cursor.execute(
+            "SELECT 1 FROM profiles WHERE scenario_id = ? AND name = ?", (scenario_id, name)
+        ).fetchone() is not None
+
+    def profile_name_taken(self, scenario_id: int, name: str) -> bool:
+        """Un profil du scénario porte-t-il déjà ce nom ? (Nom unique par scénario.)"""
+        with self._get_connection() as conn:
+            return self._profile_name_taken(conn.cursor(), scenario_id, name)
+
+    def create_profile(self, scenario_id: int, name: str, distance: float) -> int:
+        """Crée un profil vide dans un scénario et retourne son ID. Nom et distance sont
+        uniques par scénario : ValueError si l'un des deux est déjà pris."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM profiles WHERE scenario_id = ? AND name = ?",
-                (scenario_id, name)
-            )
-            row = cursor.fetchone()
-            if row:
-                return row["id"]
+            if self._profile_name_taken(cursor, scenario_id, name):
+                raise ValueError(f"Le profil « {name} » existe déjà dans ce scénario.")
 
             self._check_distance_in_zone(cursor, scenario_id, distance)
             try:
@@ -1093,10 +1111,12 @@ class DatabaseManager:
         """Pendant de _resolve_name_collision pour la distance, elle aussi UNIQUE par
         scénario : si elle est déjà prise, on la décale par pas de 0.001 m (la précision
         de saisie de l'application, cf. ui.sidebar._DISTANCE_DECIMALS) jusqu'à trouver une
-        valeur libre. Cas rare en pratique — l'essentiel des collisions à l'import porte
-        sur le nom — mais nécessaire pour ne jamais échouer sur la contrainte UNIQUE
-        (scenario_id, distance). Les distances existantes sont arrondies avant comparaison
-        pour ignorer les écarts de représentation flottante d'un aller-retour JSON."""
+        valeur libre. Ne sert plus qu'à l'import d'un scénario ou d'un projet, dont les
+        profils arrivent dans un scénario neuf (collision quasi impossible) ; un profil
+        importé seul dans un scénario existant laisse le choix à l'utilisateur (cf.
+        _place_profile_in_scenario). Les distances existantes sont arrondies avant
+        comparaison pour ignorer les écarts de représentation flottante d'un aller-retour
+        JSON."""
         existing_rounded = {round(d, 3) for d in existing_distances}
         candidate = round(desired_distance, 3)
         while candidate in existing_rounded:
@@ -1182,8 +1202,8 @@ class DatabaseManager:
             "SELECT name, distance FROM profiles WHERE scenario_id = ?", (scenario_id,)
         ).fetchall()
         name = self._resolve_name_collision({r["name"] for r in existing}, fields["name"])
-        # Un profil venant d'un brouillon n'a pas de distance : 0.0 par défaut, puis
-        # résolution de collision comme pour n'importe quelle autre distance importée.
+        # Un profil sans distance (venu d'un brouillon, dans un fichier modifié à la main) :
+        # 0.0 par défaut, puis résolution de collision comme pour toute distance importée.
         desired_distance = fields.get("distance")
         distance = self._resolve_distance_collision(
             {r["distance"] for r in existing}, desired_distance if desired_distance is not None else 0.0
@@ -1227,16 +1247,51 @@ class DatabaseManager:
 
         return scenario_id
 
-    def import_profile_into_scenario(self, scenario_id: int, data: Dict) -> int:
+    def _place_profile_in_scenario(self, cursor: sqlite3.Cursor, scenario_id: int, fields: Dict,
+                                   distance: float, replace: bool) -> int:
+        """Enregistre un profil importé ou copié (forme "profile") dans un scénario existant,
+        à `distance` (arrondie au millimètre, la précision de saisie), et retourne son ID.
+        Si un profil du scénario occupe déjà cette distance : DistanceTakenError, ou, avec
+        `replace`, ce profil est remplacé. Il garde alors son ID et sa distance, et prend
+        le nom (rendu unique parmi les autres profils), le profil existant et les
+        paramètres du profil importé."""
+        distance = round(distance, 3)
+        rows = cursor.execute(
+            "SELECT id, name, distance FROM profiles WHERE scenario_id = ?", (scenario_id,)
+        ).fetchall()
+        taken = next((r for r in rows if round(r["distance"], 3) == distance), None)
+        if taken is None:
+            return self._import_profile_fields_into_scenario(cursor, scenario_id, {**fields, "distance": distance})
+        if not replace:
+            raise DistanceTakenError(distance, taken["name"])
+
+        name = self._resolve_name_collision({r["name"] for r in rows if r["id"] != taken["id"]}, fields["name"])
+        cursor.execute(
+            """UPDATE profiles SET name = ?, existing_data = ?, project_params = ?,
+                                   last_updated = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (name, json.dumps(fields.get("existing_data") or []),
+             json.dumps(fields.get("project_params") or {}), taken["id"]),
+        )
+        return taken["id"]
+
+    def import_profile_into_scenario(self, scenario_id: int, data: Dict, distance: Optional[float] = None,
+                                     replace: bool = False) -> int:
         """Importe un profil (forme "profile", venant de export_profile/export_draft ou
         lu depuis un fichier via read_export_file) dans un scénario existant, comme
-        nouveau profil indépendant. Renomme/décale automatiquement en cas de collision
-        (cf. _resolve_name_collision / _resolve_distance_collision)."""
+        nouveau profil indépendant, à `distance` (par défaut celle du fichier ; un profil
+        exporté d'un brouillon n'en a pas, elle doit alors être fournie). Le nom est
+        rendu unique automatiquement (cf. _resolve_name_collision) ; une distance déjà
+        prise lève DistanceTakenError, sauf avec `replace` (cf. _place_profile_in_scenario)."""
+        if distance is None:
+            distance = data.get("distance")
+        if distance is None:
+            raise ValueError(f"Le profil « {data['name']} » n'a pas de distance : indiquez-la.")
         with self._get_connection() as conn:
             cursor = conn.cursor()
             if cursor.execute("SELECT 1 FROM scenarios WHERE id = ?", (scenario_id,)).fetchone() is None:
                 raise ValueError(f"Le scénario (ID {scenario_id}) est introuvable.")
-            new_id = self._import_profile_fields_into_scenario(cursor, scenario_id, data)
+            new_id = self._place_profile_in_scenario(cursor, scenario_id, data, distance, replace)
             self.last_slope_report = self._refresh_slopes(
                 cursor, self._project_of_scenario(cursor, scenario_id), [new_id]
             )
@@ -1316,12 +1371,14 @@ class DatabaseManager:
             return converted
         return []
 
-    def copy_draft_to_scenario(self, draft_id: int, scenario_id: int) -> int:
+    def copy_draft_to_scenario(self, draft_id: int, scenario_id: int, distance: float,
+                               replace: bool = False) -> int:
         """Copie un brouillon de la zone Draft vers un scénario, comme nouveau profil
-        indépendant : le brouillon source n'est pas modifié. Enchaîne exactement la même
-        collecte et la même insertion qu'un aller-retour export/import de fichier profil
-        (cf. _export_profile_fields_from_draft / _import_profile_fields_into_scenario),
-        mais entièrement en mémoire : rien n'est écrit sur le disque."""
+        indépendant à `distance` (un brouillon n'en a pas) : le brouillon source n'est pas
+        modifié. Enchaîne exactement la même collecte et la même insertion qu'un
+        aller-retour export/import de fichier profil (cf. _export_profile_fields_from_draft
+        / _place_profile_in_scenario, dont DistanceTakenError et `replace`), mais
+        entièrement en mémoire : rien n'est écrit sur le disque."""
         fields = self._export_profile_fields_from_draft(draft_id)
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -1333,7 +1390,7 @@ class DatabaseManager:
             has_zone = distance_zone(self._hard_points(cursor, project_id)) is not None
             fields["project_params"] = {**(fields.get("project_params") or {}),
                                         "slope_mode": SLOPE_COMPUTED if has_zone else SLOPE_IMPOSED}
-            new_id = self._import_profile_fields_into_scenario(cursor, scenario_id, fields)
+            new_id = self._place_profile_in_scenario(cursor, scenario_id, fields, distance, replace)
             self.last_slope_report = self._refresh_slopes(
                 cursor, self._project_of_scenario(cursor, scenario_id), [new_id]
             )

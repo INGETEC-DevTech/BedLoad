@@ -48,7 +48,7 @@ def test_create_project_scenario_and_profile_round_trip(tmp_path):
 
     project_id = db.create_project("Rivière Test")
     scenario_id = db.create_scenario(project_id, "Variante A")
-    profile_id = db.create_or_get_profile(scenario_id, "Pont de la Gare", 125.4)
+    profile_id = db.create_profile(scenario_id, "Pont de la Gare", 125.4)
 
     assert db.get_all_projects() == [
         {"id": project_id, "name": "Rivière Test", "scenarios": [
@@ -110,16 +110,18 @@ def test_get_scenario_project_id(tmp_path):
     assert db.get_scenario_project_id(999) is None
 
 
-def test_create_or_get_profile_returns_existing_id_by_name(tmp_path):
-    """Une deuxième création avec le même nom ne recrée pas de profil : elle renvoie
-    l'existant sans toucher à sa distance."""
+def test_create_profile_refuses_a_name_already_taken_in_the_scenario(tmp_path):
+    """Une deuxième création avec le même nom est refusée : le profil existant n'est ni
+    renvoyé ni modifié."""
     db = make_db(tmp_path)
     scenario_id = make_scenario(db)
+    first_id = db.create_profile(scenario_id, "Amont", 0.0)
 
-    first_id = db.create_or_get_profile(scenario_id, "Amont", 0.0)
-    second_id = db.create_or_get_profile(scenario_id, "Amont", 999.0)
+    assert db.profile_name_taken(scenario_id, "Amont")
+    assert not db.profile_name_taken(scenario_id, "Aval")
+    with pytest.raises(ValueError, match="« Amont » existe déjà"):
+        db.create_profile(scenario_id, "Amont", 999.0)
 
-    assert first_id == second_id
     profiles = db.get_all_projects()[0]["scenarios"][0]["profiles"]
     assert profiles == [{"id": first_id, "name": "Amont", "distance": 0.0}]
 
@@ -127,11 +129,11 @@ def test_create_or_get_profile_returns_existing_id_by_name(tmp_path):
 def test_profile_name_must_be_unique_per_scenario(tmp_path):
     db = make_db(tmp_path)
     scenario_id = make_scenario(db)
-    db.create_or_get_profile(scenario_id, "Amont", 0.0)
+    db.create_profile(scenario_id, "Amont", 0.0)
 
     with pytest.raises(ValueError):
         db.rename_profile(
-            db.create_or_get_profile(scenario_id, "Aval", 100.0),
+            db.create_profile(scenario_id, "Aval", 100.0),
             "Amont", 200.0,
         )
 
@@ -139,10 +141,10 @@ def test_profile_name_must_be_unique_per_scenario(tmp_path):
 def test_profile_distance_must_be_unique_per_scenario(tmp_path):
     db = make_db(tmp_path)
     scenario_id = make_scenario(db)
-    db.create_or_get_profile(scenario_id, "Amont", 0.0)
+    db.create_profile(scenario_id, "Amont", 0.0)
 
     with pytest.raises(ValueError):
-        db.create_or_get_profile(scenario_id, "Autre nom", 0.0)
+        db.create_profile(scenario_id, "Autre nom", 0.0)
 
 
 def test_same_profile_name_and_distance_allowed_in_two_scenarios_of_same_project(tmp_path):
@@ -153,8 +155,8 @@ def test_same_profile_name_and_distance_allowed_in_two_scenarios_of_same_project
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
 
-    profile_a = db.create_or_get_profile(scenario_a, "PK 300", 300.0)
-    profile_b = db.create_or_get_profile(scenario_b, "PK 300", 300.0)
+    profile_a = db.create_profile(scenario_a, "PK 300", 300.0)
+    profile_b = db.create_profile(scenario_b, "PK 300", 300.0)
 
     assert profile_a != profile_b
     scenarios = db.get_all_projects()[0]["scenarios"]
@@ -169,8 +171,8 @@ def test_same_name_or_distance_allowed_across_different_projects(tmp_path):
     scenario_a = make_scenario(db, "A")
     scenario_b = make_scenario(db, "B")
 
-    db.create_or_get_profile(scenario_a, "Amont", 0.0)
-    db.create_or_get_profile(scenario_b, "Amont", 0.0)
+    db.create_profile(scenario_a, "Amont", 0.0)
+    db.create_profile(scenario_b, "Amont", 0.0)
 
     projects = db.get_all_projects()
     assert len(projects[0]["scenarios"][0]["profiles"]) == 1
@@ -181,15 +183,15 @@ def test_create_profile_in_unknown_scenario_raises(tmp_path):
     db = make_db(tmp_path)
 
     with pytest.raises(ValueError, match="introuvable"):
-        db.create_or_get_profile(999, "Amont", 0.0)
+        db.create_profile(999, "Amont", 0.0)
 
 
 def test_profiles_sorted_by_distance_not_creation_order(tmp_path):
     db = make_db(tmp_path)
     scenario_id = make_scenario(db)
-    db.create_or_get_profile(scenario_id, "C", 300.0)
-    db.create_or_get_profile(scenario_id, "A", 100.0)
-    db.create_or_get_profile(scenario_id, "B", 200.0)
+    db.create_profile(scenario_id, "C", 300.0)
+    db.create_profile(scenario_id, "A", 100.0)
+    db.create_profile(scenario_id, "B", 200.0)
 
     names = [p["name"] for p in db.get_all_projects()[0]["scenarios"][0]["profiles"]]
     assert names == ["A", "B", "C"]
@@ -200,10 +202,10 @@ def test_duplicate_profile_stays_in_its_scenario(tmp_path):
     project_id = db.create_project("P")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    source = db.create_or_get_profile(scenario_a, "Amont", 0.0)
+    source = db.create_profile(scenario_a, "Amont", 0.0)
     db.save_profile_state(source, [{"X (m)": 0.0, "Z (m NGF)": 10.0}], {"anchor_z": 9.0})
     # Un profil homonyme dans un AUTRE scénario ne bloque pas la duplication.
-    db.create_or_get_profile(scenario_b, "Copie", 50.0)
+    db.create_profile(scenario_b, "Copie", 50.0)
 
     copy_id = db.duplicate_profile(source, "Copie", 50.0)
 
@@ -218,9 +220,9 @@ def test_longitudinal_data_is_per_scenario(tmp_path):
     project_id = db.create_project("P")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    db.create_or_get_profile(scenario_a, "Nom quelconque", 200.0)
-    db.create_or_get_profile(scenario_a, "Autre nom", 100.0)
-    db.create_or_get_profile(scenario_b, "Seul", 50.0)
+    db.create_profile(scenario_a, "Nom quelconque", 200.0)
+    db.create_profile(scenario_a, "Autre nom", 100.0)
+    db.create_profile(scenario_b, "Seul", 50.0)
 
     assert [r[0] for r in db.get_longitudinal_data(scenario_a)] == [100.0, 200.0]
     assert [r[0] for r in db.get_longitudinal_data(scenario_b)] == [50.0]
@@ -231,9 +233,9 @@ def test_scenario_profile_states_are_per_scenario_and_sorted_by_distance(tmp_pat
     project_id = db.create_project("P")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    far = db.create_or_get_profile(scenario_a, "Aval", 200.0)
-    db.create_or_get_profile(scenario_a, "Amont", 100.0)
-    db.create_or_get_profile(scenario_b, "Seul", 50.0)
+    far = db.create_profile(scenario_a, "Aval", 200.0)
+    db.create_profile(scenario_a, "Amont", 100.0)
+    db.create_profile(scenario_b, "Seul", 50.0)
     points = [{"X (m)": 0.0, "Z (m NGF)": 1.0}, {"X (m)": 1.0, "Z (m NGF)": 0.5}]
     db.save_profile_state(far, points, {"anchor_z": 0.2})
 
@@ -250,7 +252,7 @@ def test_create_scenario_without_source_starts_empty(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
     source = db.create_scenario(project_id, "Source")
-    db.create_or_get_profile(source, "Amont", 0.0)
+    db.create_profile(source, "Amont", 0.0)
 
     new_scenario = db.create_scenario(project_id, "Vide")
 
@@ -274,7 +276,7 @@ def _populate_source_scenario(db: DatabaseManager, scenario_id: int) -> dict:
         "Seuil aval": (300.0, [], {}),
     }
     for name, (distance, existing_data, params) in expected.items():
-        profile_id = db.create_or_get_profile(scenario_id, name, distance)
+        profile_id = db.create_profile(scenario_id, name, distance)
         db.save_profile_state(profile_id, existing_data, params)
     return expected
 
@@ -319,7 +321,7 @@ def test_copied_scenario_is_independent_from_its_source(tmp_path):
     db.save_profile_state(copy_ids["PK 0"], [{"X (m)": 5.0, "Z (m NGF)": 50.0}], {"anchor_z": 1.0})
     db.rename_profile(copy_ids["PK 150"], "PK 175", 175.0)
     db.delete_profile(copy_ids["Seuil aval"])
-    db.create_or_get_profile(copy, "Nouveau", 500.0)
+    db.create_profile(copy, "Nouveau", 500.0)
 
     # ...ne touche en rien à la source.
     source_now = _profiles_by_name(db, source)
@@ -343,7 +345,7 @@ def test_create_scenario_from_source_of_another_project_is_refused_atomically(tm
     project_a = db.create_project("A")
     project_b = db.create_project("B")
     source_in_a = db.create_scenario(project_a, "Source")
-    db.create_or_get_profile(source_in_a, "Amont", 0.0)
+    db.create_profile(source_in_a, "Amont", 0.0)
 
     with pytest.raises(ValueError, match="même projet"):
         db.create_scenario(project_b, "Variante", source_scenario_id=source_in_a)
@@ -359,7 +361,7 @@ def test_create_scenario_with_existing_name_does_not_copy_profiles(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
     source = db.create_scenario(project_id, "Source")
-    db.create_or_get_profile(source, "Amont", 0.0)
+    db.create_profile(source, "Amont", 0.0)
 
     with pytest.raises(ValueError):
         db.create_scenario(project_id, "Source", source_scenario_id=source)
@@ -402,10 +404,10 @@ def test_duplicate_project_copies_hard_points_scenarios_and_profiles(tmp_path):
     db.set_hard_points(project_id, TWO_POINTS)
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    profile_a = db.create_or_get_profile(scenario_a, "Amont", 0.0)
+    profile_a = db.create_profile(scenario_a, "Amont", 0.0)
     db.save_profile_state(profile_a, [{"X (m)": 0.0, "Z (m NGF)": 10.0}], {"anchor_z": 9.0})
-    db.create_or_get_profile(scenario_b, "Amont", 0.0)
-    db.create_or_get_profile(scenario_b, "Aval", 400.0)
+    db.create_profile(scenario_b, "Amont", 0.0)
+    db.create_profile(scenario_b, "Aval", 400.0)
 
     new_project_id = db.duplicate_project(project_id, "Copie")
 
@@ -432,10 +434,10 @@ def test_delete_project_cascades_to_scenarios_and_profiles(tmp_path):
     aucun scénario ni profil orphelin en base."""
     db = make_db(tmp_path)
     kept = make_scenario(db, "Gardé")
-    db.create_or_get_profile(kept, "Amont", 0.0)
+    db.create_profile(kept, "Amont", 0.0)
     project_id = db.create_project("Supprimé")
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "Amont", 0.0)
+    db.create_profile(scenario_id, "Amont", 0.0)
 
     db.delete_project(project_id)
 
@@ -448,8 +450,8 @@ def test_delete_scenario_removes_only_its_profiles(tmp_path):
     project_id = db.create_project("P")
     scenario_a = db.create_scenario(project_id, "A")
     scenario_b = db.create_scenario(project_id, "B")
-    db.create_or_get_profile(scenario_a, "PK 300", 300.0)
-    db.create_or_get_profile(scenario_b, "PK 300", 300.0)
+    db.create_profile(scenario_a, "PK 300", 300.0)
+    db.create_profile(scenario_b, "PK 300", 300.0)
 
     db.delete_scenario(scenario_a)
 
@@ -497,7 +499,7 @@ def test_drafts_are_fully_isolated_from_projects(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "Essai", 0.0)
+    profile_id = db.create_profile(scenario_id, "Essai", 0.0)
     profile_state = ([{"X (m)": 0.0, "Z (m NGF)": 1.0}], {"anchor_z": 0.5})
     db.save_profile_state(profile_id, *profile_state)
     projects_before = db.get_all_projects()
@@ -593,7 +595,7 @@ def test_migration_preserves_autoincrement_continuity(tmp_path):
 
     db = DatabaseManager(db_path=db_path)
     scenario_id = db.get_all_projects()[0]["scenarios"][0]["id"]
-    new_id = db.create_or_get_profile(scenario_id, "Nouveau", 50.0)
+    new_id = db.create_profile(scenario_id, "Nouveau", 50.0)
 
     assert new_id > 9
 
@@ -710,7 +712,7 @@ def test_migration_to_scenarios_moves_uniqueness_to_scenario_level(tmp_path):
 
     # Toujours unique au sein du scénario migré...
     with pytest.raises(ValueError):
-        db.create_or_get_profile(default_scenario, "Autre nom", 100.0)
+        db.create_profile(default_scenario, "Autre nom", 100.0)
     with pytest.raises(ValueError):
         db.rename_profile(4, "Test 1", 300.0)
     # ...mais un autre scénario du même projet peut reprendre nom et distance.
@@ -737,7 +739,7 @@ def test_migration_to_scenarios_drops_orphans_and_never_reuses_their_ids(tmp_pat
     assert raw_rows(db, "PRAGMA foreign_key_check") == []
 
     # L'id 7 (orphelin écarté) était le dernier attribué : il ne doit pas être réutilisé.
-    new_id = db.create_or_get_profile(db.get_scenarios(1)[0]["id"], "Nouveau", 50.0)
+    new_id = db.create_profile(db.get_scenarios(1)[0]["id"], "Nouveau", 50.0)
     assert new_id == 8
 
 
@@ -769,8 +771,8 @@ def test_archived_project_leaves_the_tree_and_is_listed_in_archives(tmp_path):
     kept = db.create_project("A garder")
     archived = db.create_project("A ranger")
     scenario_id = db.create_scenario(archived, "S")
-    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
-    db.create_or_get_profile(scenario_id, "PK 100", 100.0)
+    db.create_profile(scenario_id, "PK 0", 0.0)
+    db.create_profile(scenario_id, "PK 100", 100.0)
     db.create_scenario(archived, "S2")
 
     db.set_project_archived(archived, True)
@@ -785,7 +787,7 @@ def test_restoring_an_archived_project_gives_back_its_full_content(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    profile_id = db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    profile_id = db.create_profile(scenario_id, "PK 0", 0.0)
     db.save_profile_state(profile_id, [{"X (m)": 0.0, "Z (m NGF)": 5.0}], {"anchor_z": 4.5})
     before = db.get_all_projects()
 
@@ -837,7 +839,7 @@ def test_deleting_an_archived_project_removes_all_its_content(tmp_path):
     db = make_db(tmp_path)
     project_id = db.create_project("P")
     scenario_id = db.create_scenario(project_id, "S")
-    db.create_or_get_profile(scenario_id, "PK 0", 0.0)
+    db.create_profile(scenario_id, "PK 0", 0.0)
     db.set_project_archived(project_id, True)
 
     db.delete_project(project_id)
@@ -877,8 +879,8 @@ def test_migration_adds_archived_column_and_keeps_every_project_active(tmp_path)
 def test_longitudinal_data_carries_the_profile_names(tmp_path):
     db = make_db(tmp_path)
     scenario_id = make_scenario(db)
-    db.create_or_get_profile(scenario_id, "Aval", 200.0)
-    db.create_or_get_profile(scenario_id, "Amont", 0.0)
+    db.create_profile(scenario_id, "Aval", 200.0)
+    db.create_profile(scenario_id, "Amont", 0.0)
 
     rows = db.get_longitudinal_data(scenario_id)
 
@@ -904,7 +906,7 @@ def test_recent_projects_follow_the_latest_activity_and_skip_archives(tmp_path):
     old = db.create_project("Ancien")
     busy = db.create_project("Actif")
     archived = db.create_project("Rangé")
-    profile_id = db.create_or_get_profile(db.create_scenario(busy, "S"), "PK 0", 0.0)
+    profile_id = db.create_profile(db.create_scenario(busy, "S"), "PK 0", 0.0)
     execute(db, "UPDATE projects SET created_at = '2026-01-01 08:00:00'")
     execute(db, "UPDATE projects SET created_at = '2026-03-01 08:00:00' WHERE id = ?", (old,))
     execute(db, "UPDATE scenarios SET created_at = '2026-02-01 08:00:00'")

@@ -19,7 +19,8 @@ from ui.views.home_view import RECENT_PROJECTS_COUNT, HomeView
 from ui.views.project_summary_view import ProjectSummaryView
 from ui import theme
 
-from core.controller import ProfileController, ViewMode
+from core.controller import ProfileController
+from viz.figures import ViewMode, build_figure, build_longitudinal_figure
 
 class MainWindow(QMainWindow):
     TAB_MODES = [ViewMode.EXISTING, ViewMode.PROJECT, ViewMode.HYDRAULICS]
@@ -430,7 +431,7 @@ class MainWindow(QMainWindow):
         earthworks = self.controller.station_earthworks(
             self.db_manager.get_scenario_profile_states(scenario_id)
         )
-        fig = self.controller.build_longitudinal_figure(rows, hard_points, earthworks)
+        fig = build_longitudinal_figure(rows, hard_points, earthworks)
         # Un zoom mémorisé par scénario, retrouvé au retour (cf. update_plot).
         self.plot_view.update_plot(fig, view_key=f"scenario:{scenario_id}:longitudinal")
 
@@ -462,7 +463,7 @@ class MainWindow(QMainWindow):
             show_overlay = False
 
         try:
-            fig = self.controller.build_figure(
+            fig = build_figure(
                 existing_data, project_data, mode, show_overlay=show_overlay
             )
         except ValueError as e:
